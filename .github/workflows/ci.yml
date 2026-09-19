@@ -1,0 +1,27 @@
+# Continuous integration.
+#
+# Why bother on a solo project: a green badge proves the tests pass on a clean
+# machine, not just on yours. "It works on my laptop" is exactly the claim CI
+# exists to refute, and interviewers do look.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: mypy src
+      # Integration tests are excluded by default (see pyproject addopts): CI must
+      # not fail because someone else's public API had a bad afternoon.
+      - run: pytest

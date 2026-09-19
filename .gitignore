@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.env
+
+# Caches. The small static ones (elevation, street-distance matrices) are committed
+# so a fresh clone routes with zero warm-up; the polyline cache is large and is
+# rebuilt in minutes against a local OSRM (scripts/build_cache.py).
+data/cache/*.tmp
+data/cache/osrm_*_geometry.json
+
+# OSRM routing data (hundreds of MB; built by scripts/prepare_osrm.sh).
+data/osrm/
