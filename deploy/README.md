@@ -1,7 +1,10 @@
 # Deploying
 
-**Current deployment (2026-09-19):** Google Cloud project `avelo-route-optimizer`,
-always-free `e2-micro` VM `avelo` in `us-central1-a`, public IP `35.232.111.254`.
+**Current deployment (2026-09-19):** https://avelo.imranakki.com — Google Cloud
+project `avelo-route-optimizer`, always-free `e2-micro` VM `avelo` in
+`us-central1-a`, public IP `35.232.111.254`. DNS is on Cloudflare (proxied A
+record); Caddy holds a Let's Encrypt certificate obtained through the proxy, so
+Cloudflare's SSL mode can be "Full (strict)".
 The whole stack (Caddy, API, both OSRM routers, and the web app) runs there from
 pre-built images; see "Free-tier VM" below. Google keys live in that project only,
 capped at 300 map loads / 300 autocompletes / 300 place lookups per day, with a
@@ -40,7 +43,7 @@ docker compose -f docker-compose.caddy.yml up -d
 An `e2-micro` has 1 GB of RAM, so images are built here and streamed over SSH
 rather than built on the box, and the web app runs on the VM too (behind Caddy)
 until it moves to Vercel. `deploy/docker-compose.vm.yml` is the override in use;
-`deploy/Caddyfile.ip` serves on the bare IP until DNS exists.
+`deploy/Caddyfile.ip` is the Caddyfile in use (hostname with TLS, plus the bare IP over HTTP for debugging).
 
 ```bash
 Z="--project avelo-route-optimizer --zone us-central1-a"

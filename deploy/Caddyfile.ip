@@ -1,7 +1,20 @@
-# Until DNS exists, serve on the bare IP over HTTP. Once avelo.imranakki.com
-# points here, replace ":80" with the hostname and Caddy adds TLS itself.
-:80 {
+avelo.imranakki.com {
     encode zstd gzip
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+    handle_path /api/* {
+        reverse_proxy avelo-api-1:8000
+    }
+    handle {
+        reverse_proxy avelo-web-1:3000
+    }
+}
+
+# Bare IP keeps working over plain HTTP for debugging.
+:80 {
     handle_path /api/* {
         reverse_proxy avelo-api-1:8000
     }
