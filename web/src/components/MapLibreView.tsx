@@ -17,20 +17,20 @@ const STYLE_LIGHT = "https://tiles.openfreemap.org/styles/positron";
 const STYLE_DARK = "https://tiles.openfreemap.org/styles/dark";
 const QUEBEC: [number, number] = [-71.225, 46.813];
 
-function legLine(leg: Itinerary["legs"][number]): GeoJSON.Feature<GeoJSON.LineString> {
+function legLine(leg: Itinerary["legs"][number], color: string): GeoJSON.Feature<GeoJSON.LineString> {
   const pts: Coord[] = leg.geometry && leg.geometry.length > 1 ? leg.geometry : [leg.from_coord, leg.to_coord];
   return {
     type: "Feature",
-    properties: { mode: leg.mode },
+    properties: { mode: leg.mode, color },
     geometry: { type: "LineString", coordinates: pts.map((c) => [c.lon, c.lat]) },
   };
 }
 
-function toCollection(it: Itinerary | null): GeoJSON.FeatureCollection {
-  return { type: "FeatureCollection", features: it ? it.legs.map(legLine) : [] };
+function toCollection(it: Itinerary | null, colors: string[] = []): GeoJSON.FeatureCollection {
+  return { type: "FeatureCollection", features: it ? it.legs.map((leg, i) => legLine(leg, colors[i] ?? "#1d6b58")) : [] };
 }
 
-function resetPoints(it: Itinerary | null): GeoJSON.FeatureCollection {
+function resetPoints(it: Itinerary | null, colors: string[] = []): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
   if (it) {
     it.legs.forEach((leg, i) => {
@@ -38,7 +38,7 @@ function resetPoints(it: Itinerary | null): GeoJSON.FeatureCollection {
       if (leg.mode === "RIDE" && next?.mode === "RIDE") {
         features.push({
           type: "Feature",
-          properties: { name: leg.to_name },
+          properties: { name: leg.to_name, color: colors[i] ?? "#1d6b58" },
           geometry: { type: "Point", coordinates: [leg.to_coord.lon, leg.to_coord.lat] },
         });
       }
@@ -79,7 +79,7 @@ function makeMarker(index: number, count: number): Marker {
   return new maplibregl.Marker({ element: el, draggable: true, anchor: "bottom" });
 }
 
-export default function MapLibreView({ stations, stops, itinerary, ghost, lineColor, onClick, onStationClick, onDragEnd }: Props) {
+export default function MapLibreView({ stations, stops, itinerary, ghost, lineColor, legColors, bottomInset, onClick, onStationClick, onDragEnd }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MLMap | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -165,7 +165,7 @@ export default function MapLibreView({ stations, stops, itinerary, ghost, lineCo
         source: "route",
         filter: ["==", ["get", "mode"], "RIDE"],
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": resolveColor(lineColor), "line-width": 5 },
+        paint: { "line-color": ["get", "color"], "line-width": 5 },
       });
       m.addLayer({
         id: "route-walk",
@@ -179,7 +179,7 @@ export default function MapLibreView({ stations, stops, itinerary, ghost, lineCo
         id: "resets",
         type: "circle",
         source: "resets",
-        paint: { "circle-radius": 7, "circle-color": "#f4f1ea", "circle-stroke-color": resolveColor(lineColor), "circle-stroke-width": 3 },
+        paint: { "circle-radius": 7, "circle-color": "#f4f1ea", "circle-stroke-color": ["get", "color"], "circle-stroke-width": 3 },
       });
 
       const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
@@ -232,7 +232,7 @@ export default function MapLibreView({ stations, stops, itinerary, ghost, lineCo
       map.current = null;
       ready.current = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, []);
 
   // Source/layer updates must wait for the style to load; queue them until then.
@@ -251,20 +251,19 @@ export default function MapLibreView({ stations, stops, itinerary, ghost, lineCo
 
   useEffect(() => {
     whenReady((m) => {
-      (m.getSource("route") as maplibregl.GeoJSONSource).setData(toCollection(itinerary));
-      (m.getSource("resets") as maplibregl.GeoJSONSource).setData(resetPoints(itinerary));
+      const base = resolveColor(lineColor);
+      const colors = (itinerary?.legs ?? []).map((_, i) => (legColors[i] ? resolveColor(legColors[i]) : base));
+      (m.getSource("route") as maplibregl.GeoJSONSource).setData(toCollection(itinerary, colors));
+      (m.getSource("resets") as maplibregl.GeoJSONSource).setData(resetPoints(itinerary, colors));
       (m.getSource("ghost") as maplibregl.GeoJSONSource).setData(toCollection(ghost && ghost !== itinerary ? ghost : null));
-      const color = resolveColor(lineColor);
-      m.setPaintProperty("route-ride", "line-color", color);
-      m.setPaintProperty("resets", "circle-stroke-color", color);
       if (itinerary) {
         const b = new maplibregl.LngLatBounds();
         itinerary.legs.forEach((leg) => (leg.geometry ?? [leg.from_coord, leg.to_coord]).forEach((c) => b.extend([c.lon, c.lat])));
-        m.fitBounds(b, { padding: { top: 60, bottom: 60, left: 60, right: 60 }, maxZoom: 15.5, duration: 600 });
+        m.fitBounds(b, { padding: { top: 60, bottom: 60 + bottomInset, left: 40, right: 40 }, maxZoom: 15.5, duration: 600 });
       }
     });
      
-  }, [itinerary, ghost, lineColor]);
+  }, [itinerary, ghost, lineColor, legColors, bottomInset]);
 
   // One draggable, numbered pin per stop.
   useEffect(() => {
@@ -285,13 +284,13 @@ export default function MapLibreView({ stations, stops, itinerary, ghost, lineCo
       if (set.length >= 2 && !itinerary) {
         const b = new maplibregl.LngLatBounds();
         set.forEach(({ p }) => b.extend([p.lon, p.lat]));
-        m.fitBounds(b, { padding: 80, maxZoom: 15, duration: 500 });
+        m.fitBounds(b, { padding: { top: 80, bottom: 80 + bottomInset, left: 60, right: 60 }, maxZoom: 15, duration: 500 });
       } else if (set.length === 1) {
         m.easeTo({ center: [set[0].p.lon, set[0].p.lat], zoom: Math.max(m.getZoom(), 13.5), duration: 400 });
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stops]);
+  }, [stops, bottomInset]);
 
   return (
     <div className="relative h-full w-full">

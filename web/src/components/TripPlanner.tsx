@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, api2, ApiError, type Station, type TripResponse, type Vehicle } from "@/lib/api";
 import { GOOGLE_KEY } from "@/lib/google";
-import type { MapPoint } from "./mapProps";
+import { legColorsFor, type MapPoint } from "./mapProps";
 import PlaceSearch, { type Endpoint } from "./PlaceSearch";
 import ResultsPanel, { choicesFrom } from "./ResultsPanel";
 import Segmented from "./Segmented";
@@ -64,7 +64,36 @@ export default function TripPlanner() {
   const [apiDown, setApiDown] = useState(false);
   const [provider, setProvider] = useState<Provider>(GOOGLE_KEY ? "google" : "maplibre");
   const [mapNote, setMapNote] = useState<string | null>(null);
-  const [sheet, setSheet] = useState(true);
+  // Mobile bottom sheet: three snap heights, dragged by the handle.
+  type Snap = "min" | "peek" | "full";
+  const SNAP: Record<Snap, number> = { min: 96, peek: 0.5, full: 0.92 };
+  const [snap, setSnap] = useState<Snap>("peek");
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobile(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  const [drag, setDrag] = useState<{ startY: number; startH: number; h: number } | null>(null);
+  const sheetPx = (k: Snap) => (typeof window === "undefined" ? 400 : SNAP[k] < 1 ? window.innerHeight * SNAP[k] : SNAP[k]);
+  const onHandleDown = (e: React.PointerEvent) => {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setDrag({ startY: e.clientY, startH: sheetPx(snap), h: sheetPx(snap) });
+  };
+  const onHandleMove = (e: React.PointerEvent) => {
+    if (!drag) return;
+    const h = Math.max(SNAP.min, Math.min(window.innerHeight * SNAP.full, drag.startH + (drag.startY - e.clientY)));
+    setDrag({ ...drag, h });
+  };
+  const onHandleUp = () => {
+    if (!drag) return;
+    const h = drag.h;
+    const nearest = (["min", "peek", "full"] as Snap[]).reduce((a, b) => (Math.abs(sheetPx(a) - h) <= Math.abs(sheetPx(b) - h) ? a : b));
+    setSnap(nearest);
+    setDrag(null);
+  };
   const planAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -175,7 +204,7 @@ export default function TripPlanner() {
       setData(res);
       const first = choicesFrom(res)[0];
       setSelected(first ? first.key : null);
-      setSheet(true);
+      setSnap((k) => (k === "min" ? "peek" : k));
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       setData(null);
@@ -227,28 +256,47 @@ export default function TripPlanner() {
     itinerary: current?.itinerary ?? null,
     ghost: data?.naive ?? null,
     lineColor: current?.color ?? "var(--limit)",
+    legColors: legColorsFor(current?.itinerary ?? null, current?.color ?? "var(--limit)"),
+    bottomInset: isMobile ? sheetPx(snap) : 0,
     onClick: onMapClick,
     onStationClick,
     onDragEnd: (index: number, p: MapPoint) => void setPin(index, p),
   };
   const anyStop = filled.length > 0;
 
+  const sheetStyle = { ["--sheet" as string]: `${drag ? drag.h : sheetPx(snap)}px` };
+
   return (
-    <div className="grid h-full grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[440px_minmax(0,1fr)] md:grid-rows-1">
+    <div className="relative h-full md:grid md:grid-cols-[440px_minmax(0,1fr)]">
       <aside
-        className={`order-2 flex flex-col overflow-hidden border-t border-rule-strong bg-paper transition-[max-height] md:order-1 md:max-h-none md:border-r md:border-t-0 ${
-          sheet ? "max-h-[62vh]" : "max-h-[52px]"
+        style={sheetStyle}
+        className={`absolute inset-x-0 bottom-0 z-20 flex h-[var(--sheet)] flex-col overflow-hidden border-t border-rule-strong bg-paper shadow-[0_-12px_32px_-16px_rgb(0_0_0/0.45)] md:static md:z-auto md:h-auto md:border-r md:border-t-0 md:shadow-none ${
+          drag ? "" : "transition-[height] duration-300 ease-out"
         }`}
       >
-        <header className="flex items-baseline justify-between px-5 pt-4 pb-3">
+        <div
+          role="separator"
+          aria-label="Drag to resize"
+          onPointerDown={onHandleDown}
+          onPointerMove={onHandleMove}
+          onPointerUp={onHandleUp}
+          onPointerCancel={onHandleUp}
+          onClick={() => setSnap((k) => (k === "full" ? "peek" : "full"))}
+          className="flex h-6 shrink-0 touch-none cursor-grab items-center justify-center md:hidden"
+        >
+          <span className="h-1 w-10 rounded-full bg-rule-strong" />
+        </div>
+        <header className="flex items-baseline justify-between px-5 pb-3 md:pt-4">
           <h1 className="flex items-baseline gap-2">
             <span className="text-[15px] font-semibold tracking-tight text-ink">àVélo</span>
             <span className="serif text-[19px] italic text-ink-2">Route Optimizer</span>
           </h1>
           <span className="label hidden md:inline">Québec City</span>
-          <button type="button" className="label md:hidden" onClick={() => setSheet((o) => !o)} aria-expanded={sheet}>
-            {sheet ? "Hide" : "Show"}
-          </button>
+          {data && (
+            <span className="num text-[12px] text-ink md:hidden">
+              {current ? `${(current.itinerary.total_seconds / 60).toFixed(0)} min · $${current.itinerary.total_cost.toFixed(2)}` : ""}
+            </span>
+          )}
         </header>
 
         <div className="flex-1 overflow-y-auto px-5 pb-6">
@@ -394,7 +442,7 @@ export default function TripPlanner() {
         </div>
       </aside>
 
-      <main className="relative order-1 min-h-[38vh] md:order-2 md:min-h-0">
+      <main className="absolute inset-0 md:static">
         {provider === "google" ? <GoogleMapView {...mapProps} onUnavailable={onGoogleUnavailable} /> : <MapLibreView {...mapProps} />}
         {planning && (
           <div className="num pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 border border-rule-strong bg-paper px-3 py-1 text-[11px] uppercase tracking-[0.1em] text-ink">

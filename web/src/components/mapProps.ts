@@ -10,10 +10,33 @@ export type MapProps = {
   itinerary: Itinerary | null; // the highlighted one
   ghost: Itinerary | null; // faint comparison (the direct ride)
   lineColor: string; // a CSS custom property, e.g. "var(--limit)"
+  legColors: string[]; // one CSS colour per leg of `itinerary` (segment colours)
+  bottomInset: number; // px covered by the mobile sheet, so fits keep the route visible
   onClick: (p: MapPoint) => void;
   onStationClick: (s: Station) => void;
   onDragEnd: (index: number, p: MapPoint) => void;
 };
+
+/** Index of the trip segment each leg belongs to: a visit (two walks in a row) starts a new one. */
+export function legSegments(legs: Itinerary["legs"]): number[] {
+  const out: number[] = [];
+  let seg = 0;
+  legs.forEach((leg, i) => {
+    out.push(seg);
+    if (leg.mode === "WALK" && legs[i + 1]?.mode === "WALK") seg += 1;
+  });
+  return out;
+}
+
+export const SEGMENT_COLORS = ["var(--seg-0)", "var(--seg-1)", "var(--seg-2)", "var(--seg-3)", "var(--seg-4)", "var(--seg-5)"];
+
+/** Colour for each leg: per segment when the trip has several, else the strategy colour. */
+export function legColorsFor(it: Itinerary | null, fallback: string): string[] {
+  if (!it) return [];
+  const segs = legSegments(it.legs);
+  const multi = Math.max(...segs) > 0;
+  return segs.map((s) => (multi ? SEGMENT_COLORS[s % SEGMENT_COLORS.length] : fallback));
+}
 
 /** Pin colour by position: start, intermediate visits, end. */
 export function stopColor(index: number, count: number): string {

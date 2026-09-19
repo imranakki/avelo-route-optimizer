@@ -24,6 +24,14 @@
 
   --origin: #1d6b58;
   --destination: #a8271b;
+
+  /* one colour per leg of a multi-stop trip */
+  --seg-0: #1d6b58;
+  --seg-1: #24467a;
+  --seg-2: #8a4b9c;
+  --seg-3: #b3471d;
+  --seg-4: #0f7a8f;
+  --seg-5: #7a6b12;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -46,6 +54,13 @@
 
     --origin: #4fb695;
     --destination: #f07064;
+
+    --seg-0: #4fb695;
+    --seg-1: #8fb3f0;
+    --seg-2: #c99be0;
+    --seg-3: #f08a5b;
+    --seg-4: #5ec6d8;
+    --seg-5: #d6c04a;
   }
 }
 
@@ -69,6 +84,27 @@
   --font-sans: var(--font-plex-sans), "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
   --font-serif: var(--font-instrument), "Instrument Serif", Georgia, serif;
+}
+
+/* Scrollbars: thin, paper-toned, no white track. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border-radius: 8px;
+  border: 2px solid var(--paper);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
 }
 
 html,

@@ -2,6 +2,8 @@
 
 import { clock, km, minutes, money, type Itinerary, type Risk, type TripResponse } from "@/lib/api";
 import FrontierChart from "./FrontierChart";
+import { legColorsFor, legSegments } from "./mapProps";
+import ShareRow from "./ShareRow";
 
 export type Choice = { key: string; itinerary: Itinerary; color: string; title: string; kind: "limit" | "frontier" | "naive" };
 
@@ -110,21 +112,25 @@ function Row({ choice, selected, index, onSelect }: { choice: Choice; selected: 
 }
 
 /** The selected itinerary as a timetable: cumulative clock on the left, a rail with stops. */
-function Timeline({ it, color }: { it: Itinerary; color: string }) {
+function Timeline({ it, color, title }: { it: Itinerary; color: string; title: string }) {
   const rides = it.legs.filter((l) => l.mode === "RIDE");
+  const colors = legColorsFor(it, color);
+  const segs = legSegments(it.legs);
+  const multi = Math.max(...segs) > 0;
   // Cumulative start time of each leg, and the arrival time.
   const starts = it.legs.reduce<number[]>((acc, leg, i) => [...acc, (acc[i - 1] ?? 0) + (i === 0 ? 0 : it.legs[i - 1].duration_seconds)], []);
   const arrival = it.total_seconds;
   return (
-    <ol className="rise relative mt-1 mb-2 pl-1" style={{ ["--rail" as string]: color }}>
+    <ol className="rise relative mt-1 mb-2 pl-1">
       {it.legs.map((leg, i) => {
         const start = starts[i];
+        const rail = colors[i];
         const isReset = leg.mode === "RIDE" && it.legs[i + 1]?.mode === "RIDE";
         // Two walks in a row is a visit: dock near the place, come back for a bike later.
         const isVisit = leg.mode === "WALK" && it.legs[i + 1]?.mode === "WALK";
         const last = i === it.legs.length - 1;
         return (
-          <li key={i} className="grid grid-cols-[44px_18px_1fr] gap-x-2">
+          <li key={i} className="grid grid-cols-[44px_18px_1fr] gap-x-2" style={{ ["--rail" as string]: rail }}>
             <span className="num pt-[3px] text-[12px] text-muted">{clock(start)}</span>
             <span className="relative flex justify-center">
               <span
@@ -139,6 +145,11 @@ function Timeline({ it, color }: { it: Itinerary; color: string }) {
             <div className="pb-4">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[14px] text-ink">
+                  {multi && (i === 0 || segs[i] !== segs[i - 1]) && (
+                    <span className="label mr-1.5 align-[1px]" style={{ color: rail }}>
+                      Leg {segs[i] + 1}
+                    </span>
+                  )}
                   {leg.mode === "WALK" ? "Walk" : "Ride"} <span className="text-muted">to</span> {leg.to_name}
                 </span>
                 <span className="num shrink-0 text-[12px] text-muted">{minutes(leg.duration_seconds)}</span>
@@ -187,6 +198,9 @@ function Timeline({ it, color }: { it: Itinerary; color: string }) {
           docking {minutes(rides.reduce((a, l) => a + l.docking_seconds, 0))}
         </li>
       )}
+      <li>
+        <ShareRow it={it} title={title} />
+      </li>
     </ol>
   );
 }
@@ -213,7 +227,7 @@ export default function ResultsPanel({
         {choices.map((c, i) => (
           <div key={c.key}>
             <Row choice={c} selected={c.key === selectedKey} index={i} onSelect={() => onSelect(c.key)} />
-            {selected?.key === c.key && <Timeline it={c.itinerary} color={c.color} />}
+            {selected?.key === c.key && <Timeline it={c.itinerary} color={c.color} title={c.title} />}
           </div>
         ))}
       </div>

@@ -27,10 +27,16 @@ server-side when the API has a key, the OSM geocoder otherwise. The browser neve
 to Google for search, so a Maps authorisation failure cannot break it. A per-session id
 groups keystrokes and the final selection the way Google bills autocomplete.
 
-Trips can have several stops (add, reorder, remove) and return to the start; each visit
-is marked on the timetable as "bike docked". With a route highlighted, only the stations
-it uses stay on the map. The whole trip (stops, round trip, bike, plan) lives in the URL
-hash, so a plan is shareable.
+Trips can have several stops (add, reorder, remove) and return to the start; each leg of
+a multi-stop trip has its own colour on the map and in the timetable, and each visit is
+marked "bike docked". With a route highlighted, only the stations it uses stay on the map.
+The whole trip (stops, round trip, bike, plan) lives in the URL hash, so a plan is
+shareable; the selected itinerary can be handed to Google Maps (full route as waypoints,
+bicycling) or Waze (to the first station — Waze takes no waypoints), or shared with the
+system share sheet.
+
+On phones the panel is a bottom sheet over a full-screen map, with a drag handle and
+three snap heights; the map keeps the route above the sheet.
 
 ## Design
 

@@ -61,6 +61,8 @@ export default function GoogleMapView({
   itinerary,
   ghost,
   lineColor,
+  legColors,
+  bottomInset,
   onClick,
   onStationClick,
   onDragEnd,
@@ -191,10 +193,11 @@ export default function GoogleMapView({
       itinerary.legs.forEach((leg, i) => {
         const p = path(leg);
         p.forEach((pt) => bounds.extend(pt));
+        const legColor = legColors[i] ? resolveColor(legColors[i]) : color;
         if (leg.mode === "RIDE") {
           routeShapes.current.push(
             new google.maps.Polyline({ map: m, path: p, strokeColor: "#f4f1ea", strokeOpacity: 0.9, strokeWeight: 9, zIndex: 2 }),
-            new google.maps.Polyline({ map: m, path: p, strokeColor: color, strokeOpacity: 1, strokeWeight: 5, zIndex: 3 }),
+            new google.maps.Polyline({ map: m, path: p, strokeColor: legColor, strokeOpacity: 1, strokeWeight: 5, zIndex: 3 }),
           );
           if (itinerary.legs[i + 1]?.mode === "RIDE") {
             routeShapes.current.push(
@@ -203,7 +206,7 @@ export default function GoogleMapView({
                 position: { lat: leg.to_coord.lat, lng: leg.to_coord.lon },
                 title: `Reset at ${leg.to_name}`,
                 zIndex: 4,
-                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: "#f4f1ea", fillOpacity: 1, strokeColor: color, strokeWeight: 3 },
+                icon: { path: google.maps.SymbolPath.CIRCLE, scale: 7, fillColor: "#f4f1ea", fillOpacity: 1, strokeColor: legColor, strokeWeight: 3 },
               }),
             );
           }
@@ -213,9 +216,9 @@ export default function GoogleMapView({
           );
         }
       });
-      m.fitBounds(bounds, { top: 60, bottom: 60, left: 60, right: 60 });
+      m.fitBounds(bounds, { top: 60, bottom: 60 + bottomInset, left: 40, right: 40 });
     }
-  }, [itinerary, ghost, lineColor, ready]);
+  }, [itinerary, ghost, lineColor, legColors, bottomInset, ready]);
 
   // One draggable, numbered pin per stop.
   useEffect(() => {
@@ -248,13 +251,13 @@ export default function GoogleMapView({
     if (set.length >= 2 && !itinerary) {
       const b = new google.maps.LatLngBounds();
       set.forEach(({ p }) => b.extend({ lat: p.lat, lng: p.lon }));
-      m.fitBounds(b, 80);
+      m.fitBounds(b, { top: 80, bottom: 80 + bottomInset, left: 60, right: 60 });
     } else if (set.length === 1) {
       m.panTo({ lat: set[0].p.lat, lng: set[0].p.lon });
       if ((m.getZoom() ?? 0) < 14) m.setZoom(14);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stops, ready]);
+  }, [stops, ready, bottomInset]);
 
   return <div ref={container} className="h-full w-full" aria-label="Map of Québec City with àVélo stations" />;
 }
