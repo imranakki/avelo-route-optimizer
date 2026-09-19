@@ -1,0 +1,21 @@
+# Reverse proxy for every project on the VPS. One block per hostname; Caddy
+# issues and renews the TLS certificates itself. Lives at /srv/caddy/Caddyfile.
+#
+# Each project runs as its own docker compose stack on the shared "edge" network
+# (docker network create edge), and is reached here by its compose service name.
+
+# --- àVélo Route Optimizer ---------------------------------------------------
+avelo-api.imranakki.com {
+    encode zstd gzip
+    reverse_proxy avelo-api-1:8000
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
+
+# --- Next project: copy the block, change the hostname and the upstream ------
+# myproject-api.imranakki.com {
+#     reverse_proxy myproject-api-1:8000
+# }

@@ -1,0 +1,24 @@
+# The single Caddy instance that fronts every project on the machine.
+#   docker network create edge
+#   docker compose -f docker-compose.caddy.yml up -d
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+    external: true

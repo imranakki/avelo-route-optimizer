@@ -1,0 +1,15 @@
+# Production overrides: no host ports (Caddy reaches the API over the shared
+# "edge" network), production CORS, and the web app is not run here -- it is on
+# Vercel. Usage, from the project directory on the VPS:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d osrm-bike osrm-foot api
+services:
+  api:
+    ports: !override []
+    environment:
+      AVELO_CORS_ORIGINS: https://avelo.imranakki.com
+    networks: [default, edge]
+
+networks:
+  edge:
+    external: true
