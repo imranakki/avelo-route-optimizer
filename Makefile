@@ -38,5 +38,9 @@ fmt: ## Auto-format
 run: ## Start the API at http://127.0.0.1:8000/docs
 	$(VENV)/uvicorn avelo.api.app:app --reload
 
+.PHONY: web
+web: ## Start the Next.js UI at http://127.0.0.1:3000 (expects the API on :8000, or API_URL)
+	cd web && npm install --no-audit --no-fund && npm run dev
+
 .PHONY: check
 check: lint test ## Everything CI runs

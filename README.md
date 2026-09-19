@@ -69,14 +69,17 @@ climb), of which àVélo currently has none in service.
   compares all strategies on the same trips, costed with the same model.
 - **A production API**: FastAPI, lifespan-managed clients, a TTL-cached routing graph
   behind a lock, CORS, gzip, typed responses, structured 404/503s, health endpoint,
-  Dockerfile, docker-compose with the routers. And a Leaflet map at `/`.
+  place search and reverse geocoding (`/geocode`), Dockerfile, docker-compose.
+- **A web app** (`web/`, Next.js + MapLibre): search for places or drop pins, pick a
+  bike type, and every strategy is planned and drawn on real streets with resets marked.
 
 ## Quick start
 
 ```bash
 make install     # venv + dependencies
-make test        # offline suite (69 tests, no network)
-make run         # API + map at http://127.0.0.1:8000
+make test        # offline suite (71 tests, no network)
+make run         # API at http://127.0.0.1:8000 (docs at /docs, a minimal map at /)
+make web         # Next.js UI at http://127.0.0.1:3000
 ```
 
 First boot fetches the street-distance matrix once (~25 requests) and caches it; the
@@ -93,6 +96,7 @@ committed cache means a fresh clone routes immediately.
 | `GET /route/options` | the time/cost Pareto frontier (`max_solutions`) |
 | `GET /route/baseline` | the naive control |
 | `GET /route/compare` | all three side by side |
+| `GET /geocode`, `/geocode/reverse` | place search within Québec City (Photon/OSM, cached) |
 
 All routing endpoints take `from_lat, from_lon, to_lat, to_lon`, `vehicle` (`EFIT`,
 `ICONIC`, …) and `geometry=true` for street polylines. OpenAPI docs at `/docs`.
@@ -107,7 +111,7 @@ The public OSRM servers are run by volunteers for light use. For anything beyond
 
 ```bash
 ./scripts/prepare_osrm.sh          # download Québec extract, clip, build bike + foot data
-docker compose up -d               # api + osrm-bike + osrm-foot
+docker compose up -d               # web + api + osrm-bike + osrm-foot
 make cache                         # full offline cache incl. every ride-leg polyline
 ```
 
@@ -143,7 +147,11 @@ OSRM matrix ───┘   (static + live)      (time-pruned      ├─ Dijkstr
 | `routing/graph.py` | station roles (start / reset / end) and time-pruned edges |
 | `routing/planner.py` | Dijkstra, Martins' bi-criteria search, baseline |
 | `evaluation/harness.py` | density-weighted trip sampling, metrics, ablation |
+| `data/geocode.py` | place search / reverse geocoding via Photon, cached |
 | `api/app.py` | FastAPI service and the static map |
+
+`web/` — Next.js app: `PlaceSearch` (autocomplete), `MapView` (MapLibre), `ResultsPanel`,
+`TripPlanner` (state), `lib/api.ts` (typed client).
 
 Because it codes against the GBFS open standard rather than àVélo specifically, the same
 system runs on Bixi, Citi Bike, Vélib' and ~600 other networks by changing one URL.
@@ -167,7 +175,7 @@ system runs on Bixi, Citi Bike, Vélib' and ~600 other networks by changing one 
 
 ## Tests
 
-69 offline tests: property-based specs for the cost model, graph-role and pruning tests,
+71 offline tests: property-based specs for the cost model, graph-role and pruning tests,
 planner invariants (every leg under the limit; returned frontier mutually non-dominated;
 sorted by time; includes the $0 option when one exists), OSRM client behaviour under
 failure, and end-to-end HTTP tests with every upstream mocked. Integration tests against

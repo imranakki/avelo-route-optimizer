@@ -2,8 +2,10 @@
 # foot profiles) over a Québec City extract. Prepare the routing data once with
 # `./scripts/prepare_osrm.sh`, then:
 #
-#   docker compose up -d                       # everything
-#   docker compose up -d osrm-bike osrm-foot   # routers only (run the API from the venv)
+#   docker compose up -d                       # everything: web + api + routers
+#   docker compose up -d osrm-bike osrm-foot   # routers only (run api/web from source)
+#
+# Web UI on http://localhost:3000, API on http://localhost:8000.
 #
 # The API's data/cache volume persists the elevation, distance-matrix and
 # polyline caches across restarts.
@@ -39,4 +41,13 @@ services:
       - ./data/cache:/app/data/cache
     ports:
       - "8000:8000"
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    depends_on: [api]
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "3000:3000"
     restart: unless-stopped
