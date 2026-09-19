@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { Map as MLMap, MapLayerMouseEvent, MapMouseEvent, Marker } from "maplibre-gl";
 import type { Coord, Itinerary, Station } from "@/lib/api";
@@ -91,6 +91,7 @@ function makeMarker(role: "origin" | "destination"): Marker {
 export default function MapView({ stations, origin, destination, itinerary, ghost, lineColor, onClick, onDragEnd }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MLMap | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
   const ready = useRef(false);
   const markers = useRef<{ origin: Marker | null; destination: Marker | null }>({ origin: null, destination: null });
   const handlers = useRef({ onClick, onDragEnd });
@@ -102,6 +103,11 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
   // Create the map once.
   useEffect(() => {
     if (!container.current || map.current) return;
+    const probe = document.createElement("canvas");
+    if (!probe.getContext("webgl2") && !probe.getContext("webgl")) {
+      queueMicrotask(() => setProblem("This browser has no WebGL support, so the map cannot be drawn."));
+      return;
+    }
     const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const m = new maplibregl.Map({
       container: container.current,
@@ -110,6 +116,14 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
       zoom: 12.6,
       attributionControl: { compact: true },
     });
+    m.on("error", (e) => {
+      // Style or tile fetch failures: say so rather than leaving a blank canvas.
+      const msg = e.error?.message ?? "";
+      if (/style|Failed to fetch|NetworkError|sprite/i.test(msg)) {
+        setProblem(`Map tiles could not be loaded (${msg.slice(0, 80)}). Check that tiles.openfreemap.org is reachable.`);
+      }
+    });
+    m.on("load", () => setProblem(null));
     m.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     m.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true } }), "top-right");
 
@@ -283,5 +297,14 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [origin, destination]);
 
-  return <div ref={container} className="h-full w-full" aria-label="Map of Québec City with àVélo stations" />;
+  return (
+    <div className="relative h-full w-full">
+      <div ref={container} className="h-full w-full" aria-label="Map of Québec City with àVélo stations" />
+      {problem && (
+        <div role="alert" className="absolute inset-x-4 top-4 rounded-lg border border-warn/40 bg-panel px-3 py-2 text-[13px] text-warn shadow">
+          {problem}
+        </div>
+      )}
+    </div>
+  );
 }

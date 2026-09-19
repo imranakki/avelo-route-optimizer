@@ -30,10 +30,20 @@ export default function TripPlanner() {
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [apiDown, setApiDown] = useState(false);
   const planAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    api.stations().then(setStations).catch(() => setStations([]));
+    api
+      .stations()
+      .then((s) => {
+        setStations(s);
+        setApiDown(false);
+      })
+      .catch(() => {
+        setStations([]);
+        setApiDown(true);
+      });
   }, []);
 
   const fleet = useMemo(() => {
@@ -203,6 +213,13 @@ export default function TripPlanner() {
                 <span><i className="inline-block h-2 w-2 rounded-full bg-warn" /> no docks</span>
               </div>
             </div>
+          )}
+
+          {apiDown && (
+            <p role="alert" className="rounded-lg border border-warn/40 bg-warn/5 px-3 py-2 text-[13px] text-warn">
+              The routing API is not reachable. Start it with <code>make run</code> (port 8000), or point the UI at it with{" "}
+              <code>API_URL=http://127.0.0.1:PORT npm run dev</code>.
+            </p>
           )}
 
           {error && (
