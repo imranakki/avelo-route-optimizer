@@ -20,6 +20,7 @@ not the city near Montréal.
 from __future__ import annotations
 
 import logging
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -60,6 +61,9 @@ class Geocoder:
         self._owns_client = client is None
         self._cache: OrderedDict[str, list[Place]] = OrderedDict()
         self._google_ok = bool(self.settings.google_maps_api_key)
+        self._google_day = ""
+        self._google_used = 0
+        self.last_provider = self.provider  # which service answered the latest search
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -67,7 +71,22 @@ class Geocoder:
 
     @property
     def provider(self) -> str:
-        return "google" if self._google_ok else "osm"
+        return "google" if self._google_ok and self._under_cap() else "osm"
+
+    @property
+    def google_calls_today(self) -> int:
+        self._under_cap()
+        return self._google_used
+
+    def _under_cap(self) -> bool:
+        """Count billed Google calls per UTC day and stop before the free tier ends."""
+        day = time.strftime("%Y-%m-%d", time.gmtime())
+        if day != self._google_day:
+            self._google_day, self._google_used = day, 0
+        return self._google_used < self.settings.google_daily_cap
+
+    def _spend(self) -> None:
+        self._google_used += 1
 
     # -- cache ----------------------------------------------------------------
 
@@ -135,8 +154,9 @@ class Geocoder:
 
     async def resolve(self, place_id: str, session: str | None = None) -> Place | None:
         """Location of a Google place id (the Place Details "Location Only" SKU)."""
-        if not self._google_ok:
+        if not self._google_ok or not self._under_cap():
             return None
+        self._spend()
         params: dict[str, str] = {"fields": "location,displayName,formattedAddress,primaryType"}
         if session:
             params["sessionToken"] = session
@@ -219,13 +239,16 @@ class Geocoder:
             self._cache.move_to_end(key)
             return hit
 
-        if self._google_ok:
+        if self._google_ok and self._under_cap():
+            self._spend()
+            self.last_provider = "google"
             try:
                 return self._remember(key, await self._google_search(q, limit, lang, session))
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 # Quota, key restriction, outage: fall back for the rest of this process.
                 log.warning("Google Places failed (%s); using Photon from now on", exc)
                 self._google_ok = False
+        self.last_provider = "osm"
         try:
             return self._remember(key, await self._photon_search(q, limit, lang))
         except (httpx.HTTPError, ValueError) as exc:

@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, api2, ApiError, type Station, type TripResponse, type Vehicle } from "@/lib/api";
 import { GOOGLE_KEY } from "@/lib/google";
@@ -291,7 +292,9 @@ export default function TripPlanner() {
             <span className="text-[15px] font-semibold tracking-tight text-ink">àVélo</span>
             <span className="serif text-[19px] italic text-ink-2">Route Optimizer</span>
           </h1>
-          <span className="label hidden md:inline">Québec City</span>
+          <Link href="/docs" className="label hidden text-ink hover:text-limit md:inline">
+            How it works
+          </Link>
           {data && (
             <span className="num text-[12px] text-ink md:hidden">
               {current ? `${(current.itinerary.total_seconds / 60).toFixed(0)} min · $${current.itinerary.total_cost.toFixed(2)}` : ""}

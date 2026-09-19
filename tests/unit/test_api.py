@@ -282,3 +282,59 @@ def test_trip_chains_segments_and_returns_home(client: TestClient) -> None:
 
 def test_trip_rejects_a_single_stop(client: TestClient) -> None:
     assert client.get("/trip", params={"stops": "46.81,-71.2"}).status_code == 422
+
+
+def test_search_is_rate_limited_per_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("AVELO_GBFS_ROOT", ROOT)
+    monkeypatch.setenv("AVELO_GBFS_LANGUAGE", "en")
+    monkeypatch.setenv("AVELO_ELEVATION_API", ELEV)
+    monkeypatch.setenv("AVELO_USE_OSRM", "false")
+    monkeypatch.setenv("AVELO_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AVELO_GOOGLE_MAPS_API_KEY", "")
+    monkeypatch.setenv("AVELO_RATE_LIMIT_SEARCH_PER_MINUTE", "3")
+    get_settings.cache_clear()
+    from avelo.api import app as app_module
+
+    app_module._limiter._hits.clear()
+    with respx.mock(assert_all_called=False) as router:
+        _mock_upstreams(router)
+        router.get(url__startswith="https://photon.komoot.io/api/").mock(
+            return_value=httpx.Response(200, json={"features": []})
+        )
+        with TestClient(app_module.app) as c:
+            codes = [c.get("/geocode", params={"q": f"q{i}"}).status_code for i in range(4)]
+            assert codes == [200, 200, 200, 429]
+            assert c.get("/health").status_code == 200  # other routes are not limited
+    get_settings.cache_clear()
+
+
+def test_google_calls_stop_at_the_daily_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AVELO_GBFS_ROOT", ROOT)
+    monkeypatch.setenv("AVELO_GBFS_LANGUAGE", "en")
+    monkeypatch.setenv("AVELO_ELEVATION_API", ELEV)
+    monkeypatch.setenv("AVELO_USE_OSRM", "false")
+    monkeypatch.setenv("AVELO_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AVELO_GOOGLE_MAPS_API_KEY", "test-key")
+    monkeypatch.setenv("AVELO_GOOGLE_DAILY_CAP", "2")
+    get_settings.cache_clear()
+    from avelo.api import app as app_module
+
+    app_module._limiter._hits.clear()
+    with respx.mock(assert_all_called=False) as router:
+        _mock_upstreams(router)
+        google = router.post(host="places.googleapis.com", path__startswith="/v1/places").mock(
+            return_value=httpx.Response(200, json={"suggestions": []})
+        )
+        photon = router.get(url__startswith="https://photon.komoot.io/api/").mock(
+            return_value=httpx.Response(200, json={"features": []})
+        )
+        with TestClient(app_module.app) as c:
+            providers = [
+                c.get("/geocode", params={"q": f"q{i}"}).json()["provider"] for i in range(3)
+            ]
+            assert providers == ["google", "google", "osm"]
+            assert google.call_count == 2 and photon.call_count == 1
+            assert c.get("/health").json()["google_calls_today"] == 2
+    get_settings.cache_clear()

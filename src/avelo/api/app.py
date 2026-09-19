@@ -381,6 +381,8 @@ class HealthResponse(BaseModel):
     street_pairs_cached: int
     graphs_cached: list[str]
     ride_limit_minutes: float
+    search_provider: str
+    google_calls_today: int
 
 
 # --------------------------------------------------------------------------- helpers
@@ -469,6 +471,8 @@ async def health() -> HealthResponse:
         street_pairs_cached=len(st.distances),
         graphs_cached=[f"{v.value}/{lim:.0f}" for v, lim in st.graphs],
         ride_limit_minutes=st.settings.ride_limit_minutes,
+        search_provider=st.geocoder.provider,
+        google_calls_today=st.geocoder.google_calls_today,
     )
 
 
@@ -648,7 +652,7 @@ async def geocode(
     except GeocodeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return GeocodeResponse(
-        query=q, provider=geocoder.provider, results=[_place_out(p) for p in places]
+        query=q, provider=geocoder.last_provider, results=[_place_out(p) for p in places]
     )
 
 
@@ -888,6 +892,59 @@ async def index() -> FileResponse:
 async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
     log.exception("unhandled error on %s", request.url.path)
     return JSONResponse(status_code=500, content={"detail": "internal error"})
+
+
+class _RateLimiter:
+    """Sliding-minute per-client limiter. In-memory: right for one instance, which
+    is what this deploys as; a shared store is the upgrade if that ever changes."""
+
+    def __init__(self) -> None:
+        self._hits: dict[tuple[str, str], list[float]] = {}
+
+    def allow(self, client: str, bucket: str, per_minute: int) -> bool:
+        now = time.monotonic()
+        key = (client, bucket)
+        window = [t for t in self._hits.get(key, []) if now - t < 60.0]
+        if len(window) >= per_minute:
+            self._hits[key] = window
+            return False
+        window.append(now)
+        self._hits[key] = window
+        if len(self._hits) > 10_000:  # forget idle clients rather than grow forever
+            self._hits = {k: v for k, v in self._hits.items() if v and now - v[-1] < 60.0}
+        return True
+
+
+_limiter = _RateLimiter()
+
+
+@app.middleware("http")
+async def _rate_limit(request: Request, call_next):  # type: ignore[no-untyped-def]
+    path = request.url.path
+    bucket = (
+        "search"
+        if path.startswith("/geocode")
+        else "routing"
+        if path.startswith(("/route", "/trip"))
+        else None
+    )
+    if bucket is not None:
+        settings = get_settings()
+        limit = (
+            settings.rate_limit_search_per_minute
+            if bucket == "search"
+            else settings.rate_limit_routing_per_minute
+        )
+        # Behind a reverse proxy the real client is the first X-Forwarded-For entry.
+        forwarded = request.headers.get("x-forwarded-for", "")
+        client = forwarded.split(",")[0].strip() or (request.client.host if request.client else "?")
+        if not _limiter.allow(client, bucket, limit):
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "too many requests; slow down"},
+                headers={"Retry-After": "30"},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")

@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     # the fallback and handles reverse geocoding. Both are clipped to Québec City.
     google_maps_api_key: str = ""
     google_places_url: str = "https://places.googleapis.com/v1"
+    # Hard ceiling on billed Google calls per UTC day (autocomplete + details).
+    # Past it, search silently falls back to the free OSM geocoder until midnight.
+    # 300/day is ~9,000/month, under the 10,000 free requests per SKU.
+    google_daily_cap: int = 300
     geocoder_url: str = "https://photon.komoot.io/api/"
     geocoder_bbox: str = "-71.60,46.65,-70.95,47.00"  # min_lon,min_lat,max_lon,max_lat
     geocoder_bias_lat: float = 46.8139
@@ -156,6 +160,10 @@ class Settings(BaseSettings):
     # --- API -------------------------------------------------------------------
     # Comma-separated origins allowed to call the API from a browser ("*" = any).
     cors_origins: str = "*"
+    # Per-client rate limits (sliding minute). Search is a proxy to a billed key;
+    # routing is CPU. Both are cheap to abuse from a script without this.
+    rate_limit_search_per_minute: int = 40
+    rate_limit_routing_per_minute: int = 30
 
 
 @lru_cache(maxsize=1)

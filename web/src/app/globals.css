@@ -135,6 +135,19 @@ body::before {
   }
 }
 
+/* In @layer base so utilities like `no-underline` can override it. */
+@layer base {
+  a {
+    color: inherit;
+    text-decoration: underline;
+    text-decoration-color: var(--rule-strong);
+    text-underline-offset: 3px;
+  }
+  a:hover {
+    text-decoration-color: currentColor;
+  }
+}
+
 .num {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;

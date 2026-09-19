@@ -17,16 +17,16 @@ Measured over 1,000 sampled trips on live data (`docs/evaluation.md`, reproducib
 
 | metric | naive (one ride, nearest stations) | this system (every leg under the limit) |
 |---|---:|---:|
-| trips exceeding the 30-min limit | **49.9 %** | **0.0 %** |
-| mean overage charge per trip | **$2.75** | **$0.00** |
-| mean door-to-door time | 39.9 min | 41.4 min |
-| median door-to-door time | 36.4 min | 36.0 min |
-| p95 planning latency | 0.6 ms | 89 ms |
+| trips exceeding the 30-min limit | **49.6 %** | **0.0 %** |
+| mean overage charge per trip | **$2.74** | **$0.00** |
+| mean door-to-door time | 40.0 min | 41.9 min |
+| median door-to-door time | 36.3 min | 36.5 min |
+| p95 planning latency | 0.6 ms | 94 ms |
 
 Half of all trips in this network overrun a 30-minute plan when ridden naively. Routing
-them as resettable legs removes every overage charge for a mean cost of 1.5 minutes —
-and the median trip is actually *faster*, because the router is free to walk to a
-better station than the nearest one.
+them as resettable legs removes every overage charge for a mean cost of 1.9 minutes
+(median 0.2) — and that includes refusing any leg above 95 % of the limit, so the
+constrained route is not just feasible on paper but has margin.
 
 One real trip, Place-Royale (Basse-Ville) → Université Laval on an EFIT:
 
