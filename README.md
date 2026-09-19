@@ -97,11 +97,15 @@ committed cache means a fresh clone routes immediately.
 | `GET /route/options` | the time/cost Pareto frontier (`max_solutions`) |
 | `GET /route/baseline` | the naive control |
 | `GET /route/compare` | all three side by side |
+| `GET /trip` | several stops in order, optionally back to the start; per-segment options and the Pareto-optimal whole-trip combinations |
 | `GET /geocode`, `/geocode/place`, `/geocode/reverse` | place search within Québec City (Google Places or OSM, cached) |
 
-All routing endpoints take `from_lat, from_lon, to_lat, to_lon`, `vehicle` (`EFIT`,
-`ICONIC`, …), `limit` (the rider's plan: 30 or 45 minutes) and `geometry=true` for
-street polylines. OpenAPI docs at `/docs`.
+All routing endpoints take `vehicle` (`EFIT`, `ICONIC`, …), `limit` (the rider's plan: 30
+or 45 minutes), `max_risk` (default `MEDIUM`: the constrained route splits any leg
+estimated above 95 % of the limit at a nearby station rather than gamble on it) and
+`geometry=true` for street polylines. Single trips take `from_lat, from_lon, to_lat,
+to_lon`; `/trip` takes `stops=lat,lon;lat,lon;…`, `names=a|b|…` and `round_trip`.
+OpenAPI docs at `/docs`.
 
 ```bash
 curl "localhost:8000/route/options?from_lat=46.8127&from_lon=-71.2024&to_lat=46.7817&to_lon=-71.2747"
@@ -171,6 +175,12 @@ system runs on Bixi, Citi Bike, Vélib' and ~600 other networks by changing one 
   estimated duration is under 1.5× the limit.
 - **Every leg is costed identically, including the last.** Adjusting the final leg after
   the search can silently produce a dominated pair in the returned frontier.
+- **A leg at 96 % of the limit is not "under the limit".** The estimate is a mean; the
+  constrained planner refuses HIGH-risk legs and resets at a nearby station instead,
+  relaxing the cap only when nothing safer reaches the destination.
+- **Multi-stop trips are chains, not one search.** A visit means docking, so each segment
+  is planned independently and the whole-trip frontier is the Pareto-optimal set of
+  per-segment combinations, pruned segment by segment.
 - **The detour factor is measured.** Over 49,626 station pairs the bicycle network is a
   median 1.267× the straight line; the original guess of 1.35 was wrong.
 - **Decoration never fails a request.** Street-routed walk legs and polylines fall back

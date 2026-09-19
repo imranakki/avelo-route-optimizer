@@ -150,11 +150,17 @@ body::before {
   box-shadow: 0 1px 0 rgb(0 0 0 / 0.35), 0 6px 14px -4px rgb(0 0 0 / 0.5);
   cursor: grab;
 }
-.pin-origin {
-  background: var(--origin);
+.pin-label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transform: rotate(45deg);
+  font: 600 10px/1 var(--font-mono);
+  color: var(--paper);
 }
-.pin-destination {
-  background: var(--destination);
+.pin {
+  position: relative;
 }
 .station-tip {
   font: 12px/1.4 var(--font-sans);

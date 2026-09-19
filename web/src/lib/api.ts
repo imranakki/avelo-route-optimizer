@@ -52,6 +52,28 @@ export type CompareResponse = {
   stats: SearchStats;
 };
 
+export type Stop = { lat: number; lon: number; name: string };
+
+export type TripSegment = {
+  from_stop: number;
+  to_stop: number;
+  naive: Itinerary | null;
+  hard_constraint: Itinerary | null;
+  options: Itinerary[];
+};
+
+export type TripOption = { itinerary: Itinerary; choices: number[] };
+
+export type TripResponse = {
+  stops: Stop[];
+  round_trip: boolean;
+  segments: TripSegment[];
+  naive: Itinerary | null;
+  hard_constraint: Itinerary | null;
+  options: TripOption[];
+  stats: SearchStats;
+};
+
 export type Station = {
   id: string;
   name: string;
@@ -120,6 +142,23 @@ export const api = {
         from_lon: from.lon,
         to_lat: to.lat,
         to_lon: to.lon,
+        vehicle,
+        limit,
+        max_solutions: 8,
+        geometry: true,
+      },
+      signal,
+    ),
+};
+
+export const api2 = {
+  trip: (stops: Stop[], roundTrip: boolean, vehicle: Vehicle, limit: number, signal?: AbortSignal) =>
+    get<TripResponse>(
+      "/trip",
+      {
+        stops: stops.map((s) => `${s.lat.toFixed(6)},${s.lon.toFixed(6)}`).join(";"),
+        names: stops.map((s) => s.name.replace(/[|;]/g, " ")).join("|"),
+        round_trip: roundTrip,
         vehicle,
         limit,
         max_solutions: 8,

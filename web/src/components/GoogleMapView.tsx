@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Itinerary, Station } from "@/lib/api";
 import { bootstrapGoogle, googleAuthFailed, importLibrary } from "@/lib/google";
-import { resolveColor, STATION_COLORS, stationState, stationTip, type MapProps } from "./mapProps";
+import { resolveColor, STATION_COLORS, stationState, stationTip, stopColor, type MapProps } from "./mapProps";
 
 const QUEBEC = { lat: 46.813, lng: -71.225 };
 
@@ -41,11 +41,14 @@ const WALK_DASH: google.maps.IconSequence[] = [
   { icon: { path: "M 0,-1 0,1", strokeOpacity: 1, strokeWeight: 3, scale: 2.5 }, offset: "0", repeat: "11px" },
 ];
 
-function pinSvg(color: string): string {
+function pinSvg(color: string, label: string): string {
+  const text = label
+    ? `<text x="14" y="17" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="#f4f1ea">${label}</text>`
+    : `<circle cx="14" cy="13" r="4" fill="#f4f1ea"/>`;
   return (
     "data:image/svg+xml;charset=UTF-8," +
     encodeURIComponent(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36"><path d="M14 35C14 35 3 21.5 3 13a11 11 0 0 1 22 0c0 8.5-11 22-11 22Z" fill="${color}" stroke="#f4f1ea" stroke-width="2"/><circle cx="14" cy="13" r="4" fill="#f4f1ea"/></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="36" viewBox="0 0 28 36"><path d="M14 35C14 35 3 21.5 3 13a11 11 0 0 1 22 0c0 8.5-11 22-11 22Z" fill="${color}" stroke="#f4f1ea" stroke-width="2"/>${text}</svg>`,
     )
   );
 }
@@ -54,8 +57,7 @@ type Props = MapProps & { onUnavailable: (reason: string) => void };
 
 export default function GoogleMapView({
   stations,
-  origin,
-  destination,
+  stops,
   itinerary,
   ghost,
   lineColor,
@@ -68,10 +70,7 @@ export default function GoogleMapView({
   const map = useRef<google.maps.Map | null>(null);
   const [ready, setReady] = useState(false);
   const handlers = useRef({ onClick, onStationClick, onDragEnd, onUnavailable });
-  const markers = useRef<{ origin: google.maps.Marker | null; destination: google.maps.Marker | null }>({
-    origin: null,
-    destination: null,
-  });
+  const pins = useRef<google.maps.Marker[]>([]);
   const routeShapes = useRef<(google.maps.Polyline | google.maps.Marker)[]>([]);
   const ghostShapes = useRef<google.maps.Polyline[]>([]);
   const stationById = useRef(new Map<string, Station>());
@@ -218,49 +217,44 @@ export default function GoogleMapView({
     }
   }, [itinerary, ghost, lineColor, ready]);
 
-  // Origin / destination pins.
+  // One draggable, numbered pin per stop.
   useEffect(() => {
     const m = map.current;
     if (!ready || !m) return;
-    for (const role of ["origin", "destination"] as const) {
-      const point = role === "origin" ? origin : destination;
-      let marker = markers.current[role];
-      if (!point) {
-        marker?.setMap(null);
-        markers.current[role] = null;
-        continue;
-      }
-      if (!marker) {
-        marker = new google.maps.Marker({
-          map: m,
-          draggable: true,
-          zIndex: 10,
-          title: role === "origin" ? "Origin (drag to move)" : "Destination (drag to move)",
-          icon: {
-            url: pinSvg(resolveColor(role === "origin" ? "var(--origin)" : "var(--destination)")),
-            scaledSize: new google.maps.Size(28, 36),
-            anchor: new google.maps.Point(14, 35),
-          },
-        });
-        marker.addListener("dragend", () => {
-          const ll = marker!.getPosition();
-          if (ll) handlers.current.onDragEnd(role, { lat: ll.lat(), lon: ll.lng() });
-        });
-        markers.current[role] = marker;
-      }
-      marker.setPosition({ lat: point.lat, lng: point.lon });
+    pins.current.forEach((p) => p.setMap(null));
+    pins.current = [];
+    const count = stops.length;
+    const set = stops.map((p, i) => ({ p, i })).filter((x): x is { p: NonNullable<(typeof stops)[number]>; i: number } => !!x.p);
+    for (const { p, i } of set) {
+      const label = count > 2 ? String(i + 1) : "";
+      const marker = new google.maps.Marker({
+        map: m,
+        draggable: true,
+        zIndex: 10 + i,
+        position: { lat: p.lat, lng: p.lon },
+        title: `Stop ${i + 1} (drag to move)`,
+        icon: {
+          url: pinSvg(resolveColor(stopColor(i, count)), label),
+          scaledSize: new google.maps.Size(28, 36),
+          anchor: new google.maps.Point(14, 35),
+        },
+      });
+      marker.addListener("dragend", () => {
+        const ll = marker.getPosition();
+        if (ll) handlers.current.onDragEnd(i, { lat: ll.lat(), lon: ll.lng() });
+      });
+      pins.current.push(marker);
     }
-    if (origin && destination && !itinerary) {
-      const b = new google.maps.LatLngBounds({ lat: origin.lat, lng: origin.lon });
-      b.extend({ lat: destination.lat, lng: destination.lon });
+    if (set.length >= 2 && !itinerary) {
+      const b = new google.maps.LatLngBounds();
+      set.forEach(({ p }) => b.extend({ lat: p.lat, lng: p.lon }));
       m.fitBounds(b, 80);
-    } else if ((origin && !destination) || (!origin && destination)) {
-      const p = (origin ?? destination)!;
-      m.panTo({ lat: p.lat, lng: p.lon });
+    } else if (set.length === 1) {
+      m.panTo({ lat: set[0].p.lat, lng: set[0].p.lon });
       if ((m.getZoom() ?? 0) < 14) m.setZoom(14);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [origin, destination, ready]);
+  }, [stops, ready]);
 
   return <div ref={container} className="h-full w-full" aria-label="Map of Québec City with àVélo stations" />;
 }

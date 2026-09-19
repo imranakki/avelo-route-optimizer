@@ -7,7 +7,8 @@ import { suggest, type Suggestion } from "@/lib/places";
 export type Endpoint = { lat: number; lon: number; name: string; label: string };
 
 type Props = {
-  role: "origin" | "destination";
+  role: "origin" | "via" | "destination";
+  index?: number;
   value: Endpoint | null;
   onChange: (value: Endpoint | null) => void;
   onLocate?: () => void;
@@ -15,7 +16,7 @@ type Props = {
   autoFocus?: boolean;
 };
 
-export default function PlaceSearch({ role, value, onChange, onLocate, locating, autoFocus }: Props) {
+export default function PlaceSearch({ role, index, value, onChange, onLocate, locating, autoFocus }: Props) {
   const [query, setQuery] = useState(value ? value.name : "");
   const [prevValue, setPrevValue] = useState(value);
   const [results, setResults] = useState<Suggestion[]>([]);
@@ -87,11 +88,11 @@ export default function PlaceSearch({ role, value, onChange, onLocate, locating,
   return (
     <div className="relative">
       <div className="flex items-center gap-3 border-b border-rule py-2 focus-within:border-ink">
-        <span className="label w-10 shrink-0">{role === "origin" ? "From" : "To"}</span>
+        <span className="label w-10 shrink-0">{role === "origin" ? "From" : role === "destination" ? "To" : `Via ${index ?? ""}`}</span>
         <input
           ref={inputRef}
           value={query}
-          placeholder={role === "origin" ? "Search a place, or tap the map" : "Where to?"}
+          placeholder={role === "origin" ? "Search a place, or tap the map" : role === "via" ? "A place to visit on the way" : "Where to?"}
           role="combobox"
           aria-expanded={open && results.length > 0}
           aria-controls={listId}

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { Map as MLMap, MapLayerMouseEvent, MapMouseEvent, Marker } from "maplibre-gl";
 import type { Coord, Itinerary, Station } from "@/lib/api";
-import { escapeHtml, resolveColor, STATION_COLORS, stationState, type MapProps } from "./mapProps";
+import { escapeHtml, resolveColor, STATION_COLORS, stationState, stopColor, type MapProps } from "./mapProps";
 
 type Props = MapProps;
 
@@ -65,19 +65,26 @@ function stationCollection(stations: Station[]): GeoJSON.FeatureCollection {
   };
 }
 
-function makeMarker(role: "origin" | "destination"): Marker {
+function makeMarker(index: number, count: number): Marker {
   const el = document.createElement("div");
-  el.className = `pin pin-${role}`;
-  el.title = role === "origin" ? "Origin (drag to move)" : "Destination (drag to move)";
+  el.className = "pin";
+  el.style.background = resolveColor(stopColor(index, count));
+  el.title = `Stop ${index + 1} (drag to move)`;
+  if (count > 2) {
+    const n = document.createElement("span");
+    n.className = "pin-label";
+    n.textContent = String(index + 1);
+    el.append(n);
+  }
   return new maplibregl.Marker({ element: el, draggable: true, anchor: "bottom" });
 }
 
-export default function MapLibreView({ stations, origin, destination, itinerary, ghost, lineColor, onClick, onStationClick, onDragEnd }: Props) {
+export default function MapLibreView({ stations, stops, itinerary, ghost, lineColor, onClick, onStationClick, onDragEnd }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MLMap | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const ready = useRef(false);
-  const markers = useRef<{ origin: Marker | null; destination: Marker | null }>({ origin: null, destination: null });
+  const pins = useRef<Marker[]>([]);
   const handlers = useRef({ onClick, onStationClick, onDragEnd });
   const queue = useRef<((m: MLMap) => void)[]>([]);
   const stationById = useRef(new Map<string, Station>());
@@ -259,40 +266,32 @@ export default function MapLibreView({ stations, origin, destination, itinerary,
      
   }, [itinerary, ghost, lineColor]);
 
-  // Markers for origin / destination.
+  // One draggable, numbered pin per stop.
   useEffect(() => {
     whenReady((m) => {
-      for (const role of ["origin", "destination"] as const) {
-        const point = role === "origin" ? origin : destination;
-        let marker = markers.current[role];
-        if (!point) {
-          marker?.remove();
-          markers.current[role] = null;
-          continue;
-        }
-        if (!marker) {
-          marker = makeMarker(role);
-          marker.on("dragend", () => {
-            const ll = marker!.getLngLat();
-            handlers.current.onDragEnd(role, { lat: ll.lat, lon: ll.lng });
-          });
-          markers.current[role] = marker;
-          marker.setLngLat([point.lon, point.lat]).addTo(m);
-        } else {
-          marker.setLngLat([point.lon, point.lat]);
-        }
+      pins.current.forEach((p) => p.remove());
+      pins.current = [];
+      const count = stops.length;
+      const set = stops.map((p, i) => ({ p, i })).filter((x): x is { p: NonNullable<(typeof stops)[number]>; i: number } => !!x.p);
+      for (const { p, i } of set) {
+        const marker = makeMarker(i, count);
+        marker.on("dragend", () => {
+          const ll = marker.getLngLat();
+          handlers.current.onDragEnd(i, { lat: ll.lat, lon: ll.lng });
+        });
+        marker.setLngLat([p.lon, p.lat]).addTo(m);
+        pins.current.push(marker);
       }
-      if (origin && destination && !itinerary) {
-        const b = new maplibregl.LngLatBounds([origin.lon, origin.lat], [origin.lon, origin.lat]);
-        b.extend([destination.lon, destination.lat]);
+      if (set.length >= 2 && !itinerary) {
+        const b = new maplibregl.LngLatBounds();
+        set.forEach(({ p }) => b.extend([p.lon, p.lat]));
         m.fitBounds(b, { padding: 80, maxZoom: 15, duration: 500 });
-      } else if ((origin && !destination) || (!origin && destination)) {
-        const p = (origin ?? destination)!;
-        m.easeTo({ center: [p.lon, p.lat], zoom: Math.max(m.getZoom(), 13.5), duration: 400 });
+      } else if (set.length === 1) {
+        m.easeTo({ center: [set[0].p.lon, set[0].p.lat], zoom: Math.max(m.getZoom(), 13.5), duration: 400 });
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [origin, destination]);
+  }, [stops]);
 
   return (
     <div className="relative h-full w-full">

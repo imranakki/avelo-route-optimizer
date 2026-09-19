@@ -1,6 +1,6 @@
 "use client";
 
-import { clock, km, minutes, money, type CompareResponse, type Itinerary, type Risk } from "@/lib/api";
+import { clock, km, minutes, money, type Itinerary, type Risk, type TripResponse } from "@/lib/api";
 import FrontierChart from "./FrontierChart";
 
 export type Choice = { key: string; itinerary: Itinerary; color: string; title: string; kind: "limit" | "frontier" | "naive" };
@@ -21,8 +21,9 @@ const RISK_CLASS: Record<Risk, string> = {
 const same = (a: Itinerary | null, b: Itinerary) =>
   !!a && Math.abs(a.total_seconds - b.total_seconds) < 0.5 && a.total_cost === b.total_cost;
 
-export function choicesFrom(data: CompareResponse): Choice[] {
+export function choicesFrom(data: TripResponse): Choice[] {
   const out: Choice[] = [];
+  const multi = data.segments.length > 1;
   if (data.hard_constraint) {
     out.push({ key: "limit", itinerary: data.hard_constraint, color: "var(--limit)", title: "Every leg under the limit", kind: "limit" });
   }
@@ -30,47 +31,51 @@ export function choicesFrom(data: CompareResponse): Choice[] {
   data.options.forEach((o, i) => {
     // The constrained route usually reappears as the cheapest frontier point and the
     // direct ride as the fastest; each itinerary appears once.
-    if (same(data.hard_constraint, o)) return;
-    const isNaive = same(data.naive, o);
+    if (same(data.hard_constraint, o.itinerary)) return;
+    const isNaive = same(data.naive, o.itinerary);
     naiveShown ||= isNaive;
     out.push({
       key: `p${i}`,
-      itinerary: o,
+      itinerary: o.itinerary,
       color: isNaive ? "var(--naive)" : "var(--frontier)",
-      title: isNaive ? "Direct ride" : `Trade-off ${i + 1}`,
+      title: isNaive ? (multi ? "Direct rides" : "Direct ride") : `Trade-off ${i + 1}`,
       kind: isNaive ? "naive" : "frontier",
     });
   });
   if (data.naive && !naiveShown && !same(data.hard_constraint, data.naive)) {
-    out.push({ key: "naive", itinerary: data.naive, color: "var(--naive)", title: "Direct ride", kind: "naive" });
+    out.push({ key: "naive", itinerary: data.naive, color: "var(--naive)", title: multi ? "Direct rides" : "Direct ride", kind: "naive" });
   }
   return out;
 }
 
-function Headline({ data }: { data: CompareResponse }) {
+function Headline({ data }: { data: TripResponse }) {
   const naive = data.naive;
   const hard = data.hard_constraint;
+  const visits = data.segments.length;
+  const where = visits > 1 ? ` across ${visits} legs${data.round_trip ? ", back to the start" : ""}` : "";
   if (!hard) {
     return (
       <p className="serif text-[26px] leading-[1.15] text-ink">
-        No way to keep every leg under the limit — the options below all cost something.
+        No way to keep every ride under the limit{where} — every option below costs something.
       </p>
     );
   }
   if (!naive || same(naive, hard) || naive.total_cost === 0) {
     return (
       <p className="serif text-[26px] leading-[1.15] text-ink">
-        The direct ride fits the limit. <span className="italic text-muted">Nothing to pay, no reset.</span>
+        {visits > 1 ? "Every ride fits the limit" : "The direct ride fits the limit"}
+        {where}. <span className="italic text-muted">Nothing to pay, no reset.</span>
       </p>
     );
   }
   const saving = naive.total_cost - hard.total_cost;
   const delta = (hard.total_seconds - naive.total_seconds) / 60;
   const deltaText = Math.abs(delta) < 0.05 ? "the same time" : delta > 0 ? `${delta.toFixed(1)} more minutes` : `${(-delta).toFixed(1)} fewer minutes`;
+  const resets = hard.num_transfers;
   return (
     <p className="serif text-[26px] leading-[1.15] text-ink">
-      Reset the clock once{hard.num_transfers > 1 ? ` — ${hard.num_transfers} times —` : ""} and save{" "}
-      <span className="num text-[24px] text-limit">{money(saving)}</span>{" "}
+      Reset the clock {resets === 1 ? "once" : `${resets} times`}
+      {where} and save <span className="num text-[24px] text-limit">{money(saving)}</span>{" "}
       <span className="italic text-muted">for {deltaText}.</span>
     </p>
   );
@@ -115,6 +120,8 @@ function Timeline({ it, color }: { it: Itinerary; color: string }) {
       {it.legs.map((leg, i) => {
         const start = starts[i];
         const isReset = leg.mode === "RIDE" && it.legs[i + 1]?.mode === "RIDE";
+        // Two walks in a row is a visit: dock near the place, come back for a bike later.
+        const isVisit = leg.mode === "WALK" && it.legs[i + 1]?.mode === "WALK";
         const last = i === it.legs.length - 1;
         return (
           <li key={i} className="grid grid-cols-[44px_18px_1fr] gap-x-2">
@@ -146,6 +153,12 @@ function Timeline({ it, color }: { it: Itinerary; color: string }) {
                   </>
                 )}
               </div>
+              {isVisit && (
+                <div className="mt-1.5 inline-flex items-center gap-1.5 bg-ink px-1.5 py-0.5 text-[11px] text-paper">
+                  <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-paper" />
+                  Visit {leg.to_name} — bike docked
+                </div>
+              )}
               {isReset && (
                 <div className="mt-1.5 inline-flex items-center gap-1.5 border border-rule-strong px-1.5 py-0.5 text-[11px] text-ink">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
@@ -185,7 +198,7 @@ export default function ResultsPanel({
   onSelect,
   limitMinutes,
 }: {
-  data: CompareResponse;
+  data: TripResponse;
   choices: Choice[];
   selectedKey: string | null;
   onSelect: (key: string) => void;

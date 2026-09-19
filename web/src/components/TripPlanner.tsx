@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, type CompareResponse, type Station, type Vehicle } from "@/lib/api";
+import { api, api2, ApiError, type Station, type TripResponse, type Vehicle } from "@/lib/api";
 import { GOOGLE_KEY } from "@/lib/google";
 import type { MapPoint } from "./mapProps";
 import PlaceSearch, { type Endpoint } from "./PlaceSearch";
@@ -18,24 +18,26 @@ const LIMITS = [30, 45] as const;
 
 const fmt = (p: MapPoint) => `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}`;
 
-// The trip lives in the URL hash so a plan can be shared or reloaded.
-function readHash(): Partial<{ from: Endpoint; to: Endpoint; vehicle: Vehicle; limit: number }> {
+// The trip lives in the URL hash so a plan can be shared or reloaded:
+//   #stops=lat|lon|name;lat|lon|name;…&round=1&bike=ICONIC&limit=45
+function readHash(): Partial<{ stops: (Endpoint | null)[]; round: boolean; vehicle: Vehicle; limit: number }> {
   if (typeof window === "undefined") return {};
   try {
     const q = new URLSearchParams(window.location.hash.slice(1));
-    const ep = (k: string): Endpoint | undefined => {
-      const v = q.get(k);
-      if (!v) return undefined;
-      const [lat, lon, ...name] = v.split("|");
-      const la = Number(lat);
-      const lo = Number(lon);
-      if (!Number.isFinite(la) || !Number.isFinite(lo)) return undefined;
-      return { lat: la, lon: lo, name: name.join("|") || "Pinned location", label: fmt({ lat: la, lon: lo }) };
-    };
+    const stops = (q.get("stops") ?? "")
+      .split(";")
+      .filter(Boolean)
+      .map((v): Endpoint | null => {
+        const [lat, lon, ...name] = v.split("|");
+        const la = Number(lat);
+        const lo = Number(lon);
+        if (!Number.isFinite(la) || !Number.isFinite(lo)) return null;
+        return { lat: la, lon: lo, name: name.join("|") || "Pinned location", label: fmt({ lat: la, lon: lo }) };
+      });
     const limit = Number(q.get("limit"));
     return {
-      from: ep("from"),
-      to: ep("to"),
+      stops: stops.length >= 2 ? stops : undefined,
+      round: q.get("round") === "1",
       vehicle: (q.get("bike") as Vehicle) || undefined,
       limit: LIMITS.includes(limit as 30 | 45) ? limit : undefined,
     };
@@ -44,14 +46,17 @@ function readHash(): Partial<{ from: Endpoint; to: Endpoint; vehicle: Vehicle; l
   }
 }
 
+const MAX_STOPS = 6;
+
 export default function TripPlanner() {
   const initial = useMemo(() => readHash(), []);
-  const [origin, setOrigin] = useState<Endpoint | null>(initial.from ?? null);
-  const [destination, setDestination] = useState<Endpoint | null>(initial.to ?? null);
+  // stops[0] is the start, stops[last] the end; entries in between are visits.
+  const [stops, setStops] = useState<(Endpoint | null)[]>(initial.stops ?? [null, null]);
+  const [roundTrip, setRoundTrip] = useState<boolean>(initial.round ?? false);
   const [vehicle, setVehicle] = useState<Vehicle>(initial.vehicle ?? "EFIT");
   const [limit, setLimit] = useState<number>(initial.limit ?? 30);
   const [stations, setStations] = useState<Station[]>([]);
-  const [data, setData] = useState<CompareResponse | null>(null);
+  const [data, setData] = useState<TripResponse | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [planning, setPlanning] = useState(false);
   const [locating, setLocating] = useState(false);
@@ -75,16 +80,22 @@ export default function TripPlanner() {
       });
   }, []);
 
+  const complete = stops.every((s): s is Endpoint => s !== null) && stops.length >= 2;
+  const filled = stops.filter((s): s is Endpoint => s !== null);
+
   // Keep the URL in sync with the trip.
   useEffect(() => {
     const q = new URLSearchParams();
-    if (origin) q.set("from", `${origin.lat.toFixed(5)}|${origin.lon.toFixed(5)}|${origin.name}`);
-    if (destination) q.set("to", `${destination.lat.toFixed(5)}|${destination.lon.toFixed(5)}|${destination.name}`);
+    if (filled.length > 0) {
+      q.set("stops", stops.map((s) => (s ? `${s.lat.toFixed(5)}|${s.lon.toFixed(5)}|${s.name.replace(/[;|]/g, " ")}` : "")).join(";"));
+    }
+    if (roundTrip) q.set("round", "1");
     if (vehicle !== "EFIT") q.set("bike", vehicle);
     if (limit !== 30) q.set("limit", String(limit));
     const hash = q.toString();
     window.history.replaceState(null, "", hash ? `#${hash}` : window.location.pathname);
-  }, [origin, destination, vehicle, limit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stops, roundTrip, vehicle, limit]);
 
   const fleet = useMemo(() => {
     const total: Record<string, number> = {};
@@ -92,29 +103,47 @@ export default function TripPlanner() {
     return total;
   }, [stations]);
 
-  // A pin dropped or dragged on the map: label it with the nearest named place.
-  const setPin = useCallback(async (role: "origin" | "destination", p: MapPoint) => {
-    const setter = role === "origin" ? setOrigin : setDestination;
-    setter({ ...p, name: "Pinned location", label: fmt(p) });
-    try {
-      const place = await api.reverse(p);
-      if (place) setter({ ...p, name: place.name, label: place.label ? `${place.label} · ${fmt(p)}` : fmt(p) });
-    } catch {
-      // keep the coordinate label
-    }
+  const setStop = useCallback((index: number, value: Endpoint | null) => {
+    setStops((prev) => prev.map((s, i) => (i === index ? value : s)));
   }, []);
 
-  const nextRole = useCallback((): "origin" | "destination" => (!origin ? "origin" : "destination"), [origin]);
+  // A pin dropped or dragged on the map: label it with the nearest named place.
+  const setPin = useCallback(
+    async (index: number, p: MapPoint) => {
+      setStop(index, { ...p, name: "Pinned location", label: fmt(p) });
+      try {
+        const place = await api.reverse(p);
+        if (place) setStop(index, { ...p, name: place.name, label: place.label ? `${place.label} · ${fmt(p)}` : fmt(p) });
+      } catch {
+        // keep the coordinate label
+      }
+    },
+    [setStop],
+  );
 
-  const onMapClick = useCallback((p: MapPoint) => void setPin(nextRole(), p), [nextRole, setPin]);
+  // The first empty slot, else the last stop (so a tap always does something).
+  const nextIndex = useCallback((): number => {
+    const empty = stops.findIndex((s) => s === null);
+    return empty >= 0 ? empty : stops.length - 1;
+  }, [stops]);
+
+  const onMapClick = useCallback((p: MapPoint) => void setPin(nextIndex(), p), [nextIndex, setPin]);
 
   const onStationClick = useCallback(
-    (s: Station) => {
-      const setter = nextRole() === "origin" ? setOrigin : setDestination;
-      setter({ lat: s.lat, lon: s.lon, name: s.name, label: `àVélo station · ${s.bikes} bikes, ${s.docks} docks` });
-    },
-    [nextRole],
+    (s: Station) => setStop(nextIndex(), { lat: s.lat, lon: s.lon, name: s.name, label: `àVélo station · ${s.bikes} bikes, ${s.docks} docks` }),
+    [nextIndex, setStop],
   );
+
+  const addStop = () => setStops((prev) => (prev.length >= MAX_STOPS ? prev : [...prev.slice(0, -1), null, prev[prev.length - 1]]));
+  const removeStop = (index: number) => setStops((prev) => (prev.length <= 2 ? prev : prev.filter((_, i) => i !== index)));
+  const moveStop = (index: number, dir: -1 | 1) =>
+    setStops((prev) => {
+      const j = index + dir;
+      if (j < 0 || j >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[j]] = [next[j], next[index]];
+      return next;
+    });
 
   const locate = () => {
     if (!navigator.geolocation) return setError("Geolocation is not available in this browser.");
@@ -122,7 +151,7 @@ export default function TripPlanner() {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setLocating(false);
-        void setPin("origin", { lat: pos.coords.latitude, lon: pos.coords.longitude });
+        void setPin(0, { lat: pos.coords.latitude, lon: pos.coords.longitude });
       },
       () => {
         setLocating(false);
@@ -132,20 +161,17 @@ export default function TripPlanner() {
     );
   };
 
-  const swap = () => {
-    setOrigin(destination);
-    setDestination(origin);
-  };
+  const reverse = () => setStops((prev) => [...prev].reverse());
 
   const plan = useCallback(async () => {
-    if (!origin || !destination) return;
+    if (!complete) return;
     planAbort.current?.abort();
     const ctrl = new AbortController();
     planAbort.current = ctrl;
     setPlanning(true);
     setError(null);
     try {
-      const res = await api.compare(origin, destination, vehicle, limit, ctrl.signal);
+      const res = await api2.trip(filled, roundTrip, vehicle, limit, ctrl.signal);
       setData(res);
       const first = choicesFrom(res)[0];
       setSelected(first ? first.key : null);
@@ -158,16 +184,17 @@ export default function TripPlanner() {
     } finally {
       if (planAbort.current === ctrl) setPlanning(false);
     }
-  }, [origin, destination, vehicle, limit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stops, roundTrip, vehicle, limit, complete]);
 
-  // Plan automatically once both ends are set, and whenever an input changes.
+  // Plan automatically once every stop is set, and whenever an input changes.
   useEffect(() => {
     const t = setTimeout(() => {
-      if (origin && destination) void plan();
+      if (complete) void plan();
       else setData(null);
     }, 0);
     return () => clearTimeout(t);
-  }, [origin, destination, vehicle, limit, plan]);
+  }, [complete, plan]);
 
   const onGoogleUnavailable = useCallback((reason: string) => {
     setProvider("maplibre");
@@ -178,17 +205,33 @@ export default function TripPlanner() {
 
   const choices = useMemo(() => (data ? choicesFrom(data) : []), [data]);
   const current = choices.find((c) => c.key === selected) ?? null;
+
+  // With a route highlighted, only the stations it uses stay on the map: the
+  // other 200 dots are noise once the decision is "where do I dock".
+  const visibleStations = useMemo(() => {
+    if (!current) return stations;
+    const used = new Set<string>();
+    for (const leg of current.itinerary.legs) {
+      if (leg.mode !== "RIDE") continue;
+      for (const c of [leg.from_coord, leg.to_coord]) {
+        const hit = stations.find((s) => Math.abs(s.lat - c.lat) < 1e-4 && Math.abs(s.lon - c.lon) < 1e-4);
+        if (hit) used.add(hit.id);
+      }
+    }
+    return stations.filter((s) => used.has(s.id));
+  }, [current, stations]);
+
   const mapProps = {
-    stations,
-    origin,
-    destination,
+    stations: visibleStations,
+    stops,
     itinerary: current?.itinerary ?? null,
     ghost: data?.naive ?? null,
     lineColor: current?.color ?? "var(--limit)",
     onClick: onMapClick,
     onStationClick,
-    onDragEnd: (role: "origin" | "destination", p: MapPoint) => void setPin(role, p),
+    onDragEnd: (index: number, p: MapPoint) => void setPin(index, p),
   };
+  const anyStop = filled.length > 0;
 
   return (
     <div className="grid h-full grid-rows-[minmax(0,1fr)_auto] md:grid-cols-[440px_minmax(0,1fr)] md:grid-rows-1">
@@ -210,20 +253,69 @@ export default function TripPlanner() {
 
         <div className="flex-1 overflow-y-auto px-5 pb-6">
           <div className="relative">
-            <PlaceSearch role="origin" value={origin} onChange={setOrigin} onLocate={locate} locating={locating} autoFocus={!origin} />
-            <PlaceSearch role="destination" value={destination} onChange={setDestination} />
-            <button
-              type="button"
-              onClick={swap}
-              disabled={!origin && !destination}
-              title="Swap origin and destination"
-              aria-label="Swap origin and destination"
-              className="absolute right-0 top-[38px] grid h-8 w-8 place-items-center border border-rule-strong bg-paper text-muted hover:text-ink disabled:opacity-30"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-                <path d="M7 3v18M7 21l-4-4M7 21l4-4M17 21V3M17 3l4 4M17 3l-4 4" />
-              </svg>
-            </button>
+            {stops.map((stop, i) => {
+              const role = i === 0 ? "origin" : i === stops.length - 1 ? "destination" : "via";
+              return (
+                <div key={i} className="group relative">
+                  <PlaceSearch
+                    role={role}
+                    index={i}
+                    value={stop}
+                    onChange={(v) => setStop(i, v)}
+                    onLocate={i === 0 ? locate : undefined}
+                    locating={locating}
+                    autoFocus={i === 0 && !stop}
+                  />
+                  {role === "via" && (
+                    <div className="absolute right-0 top-2 flex gap-0.5">
+                      <IconButton label="Move up" onClick={() => moveStop(i, -1)} disabled={i <= 1}>
+                        <path d="M7 11l5-5 5 5" />
+                      </IconButton>
+                      <IconButton label="Move down" onClick={() => moveStop(i, 1)} disabled={i >= stops.length - 2}>
+                        <path d="M7 13l5 5 5-5" />
+                      </IconButton>
+                      <IconButton label="Remove stop" onClick={() => removeStop(i)}>
+                        <path d="M6 6l12 12M18 6L6 18" />
+                      </IconButton>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={addStop}
+                disabled={stops.length >= MAX_STOPS}
+                className="label inline-flex items-center gap-1.5 py-1 text-ink hover:text-limit disabled:opacity-40"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden>
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+                Add a stop
+              </button>
+              <label className="label inline-flex cursor-pointer items-center gap-2 py-1 text-ink">
+                <input
+                  type="checkbox"
+                  checked={roundTrip}
+                  onChange={(e) => setRoundTrip(e.target.checked)}
+                  className="h-3.5 w-3.5 appearance-none border border-rule-strong bg-paper checked:bg-ink"
+                />
+                Return to start
+              </label>
+              <button
+                type="button"
+                onClick={reverse}
+                disabled={filled.length < 2}
+                title="Reverse the order of the stops"
+                className="label inline-flex items-center gap-1.5 py-1 text-ink hover:text-limit disabled:opacity-40"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+                  <path d="M7 3v18M7 21l-4-4M7 21l4-4M17 21V3M17 3l4 4M17 3l-4 4" />
+                </svg>
+                Reverse
+              </button>
+            </div>
           </div>
 
           <div className="mt-4 grid grid-cols-2 gap-3">
@@ -252,7 +344,7 @@ export default function TripPlanner() {
           )}
           {mapNote && <p className="mt-4 border-l-2 border-rule-strong pl-3 text-[12px] text-muted">{mapNote}</p>}
 
-          {!origin && !destination && !data && (
+          {!anyStop && !data && (
             <div className="mt-8">
               <p className="serif text-[26px] leading-[1.15] text-ink">
                 One bike, one trip, <span className="italic">no overage</span>.
@@ -275,7 +367,10 @@ export default function TripPlanner() {
                 </dt>
                 <dd>no docks to reset in</dd>
               </dl>
-              <p className="mt-5 text-[12px] text-muted">Tap a station or anywhere on the map to set your start, then your destination.</p>
+              <p className="mt-5 text-[12px] text-muted">
+                Tap a station or anywhere on the map to set your start, then your destination. Add stops to visit several places, and
+                tick “Return to start” for a round trip.
+              </p>
             </div>
           )}
 
@@ -306,12 +401,30 @@ export default function TripPlanner() {
             Planning
           </div>
         )}
-        {origin && !destination && (
+        {anyStop && !complete && (
           <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 border border-rule-strong bg-paper px-3 py-1.5 text-[12px] text-ink shadow-[0_8px_24px_-12px_rgb(0_0_0/0.5)]">
-            Now tap where you are going
+            Now tap stop {nextIndex() + 1}
+            {nextIndex() === stops.length - 1 ? " — where you are going" : ""}
           </div>
         )}
       </main>
     </div>
+  );
+}
+
+function IconButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="grid h-8 w-8 place-items-center text-muted hover:text-ink disabled:opacity-25"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+        {children}
+      </svg>
+    </button>
   );
 }

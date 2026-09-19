@@ -41,7 +41,7 @@ from avelo.data.elevation import ElevationClient
 from avelo.data.gbfs import GBFSClient, GBFSError
 from avelo.data.geocode import GeocodeError, Geocoder, Place
 from avelo.data.osrm import OSRMClient
-from avelo.models import Coord, Itinerary, LegMode, StationSnapshot, VehicleType
+from avelo.models import Coord, Itinerary, LegMode, RiskLevel, StationSnapshot, VehicleType
 from avelo.routing.cost import CostModel
 from avelo.routing.graph import PairKey, StationGraph
 from avelo.routing.planner import NoRouteFound, RoutePlanner, SearchStats, WalkContext
@@ -339,6 +339,40 @@ class GeocodeResponse(BaseModel):
     results: list[PlaceOut]
 
 
+class StopOut(BaseModel):
+    lat: float
+    lon: float
+    name: str
+
+
+class TripSegmentOut(BaseModel):
+    """One door-to-door leg of a multi-stop trip, with its own options."""
+
+    from_stop: int
+    to_stop: int
+    naive: Itinerary | None
+    hard_constraint: Itinerary | None
+    options: list[Itinerary]
+
+
+class TripOptionOut(BaseModel):
+    """A whole-trip itinerary assembled from one option per segment."""
+
+    itinerary: Itinerary
+    # Index into each segment's `options` (or -1 for its hard-constraint route).
+    choices: list[int]
+
+
+class TripResponse(BaseModel):
+    stops: list[StopOut]
+    round_trip: bool
+    segments: list[TripSegmentOut]
+    naive: Itinerary | None
+    hard_constraint: Itinerary | None
+    options: list[TripOptionOut]
+    stats: StatsOut
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str
@@ -408,6 +442,15 @@ def _limit() -> float:
     )
 
 
+def _max_risk() -> RiskLevel:
+    return Query(  # type: ignore[no-any-return]
+        RiskLevel.MEDIUM,
+        description="Worst per-leg risk the constrained route accepts. MEDIUM (default) "
+        "splits any leg estimated above 95% of the limit at a nearby station; HIGH "
+        "accepts anything that fits.",
+    )
+
+
 def _geom() -> bool:
     return Query(False, description="Attach street polylines to every leg (for maps).")  # type: ignore[no-any-return]
 
@@ -464,6 +507,7 @@ async def route(
     to_lon: float = _lon(),
     vehicle: VehicleType = VehicleType.EFIT,
     limit: float = _limit(),
+    max_risk: RiskLevel = _max_risk(),  # noqa: B008 -- FastAPI Query default
     geometry: bool = _geom(),
 ) -> RouteResponse:
     """Fastest itinerary in which every ride leg respects the ride limit ($0 overage)."""
@@ -472,7 +516,7 @@ async def route(
     )
     t0 = time.perf_counter()
     try:
-        it = planner.plan_hard_constraint(origin, destination, vehicle, walks)
+        it = planner.plan_hard_constraint(origin, destination, vehicle, walks, max_risk)
     except NoRouteFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     ms = (time.perf_counter() - t0) * 1000
@@ -542,6 +586,7 @@ async def route_compare(
     to_lon: float = _lon(),
     vehicle: VehicleType = VehicleType.EFIT,
     limit: float = _limit(),
+    max_risk: RiskLevel = _max_risk(),  # noqa: B008 -- FastAPI Query default
     max_solutions: int = Query(5, ge=1, le=20),
     geometry: bool = _geom(),
 ) -> CompareResponse:
@@ -557,7 +602,7 @@ async def route_compare(
     with suppress(NoRouteFound):
         naive = planner.plan_naive_baseline(origin, destination, vehicle, walks)
     try:
-        hard = planner.plan_hard_constraint(origin, destination, vehicle, walks)
+        hard = planner.plan_hard_constraint(origin, destination, vehicle, walks, max_risk)
     except NoRouteFound as exc:
         reason = str(exc)  # the most specific explanation we have
     with suppress(NoRouteFound):
@@ -632,6 +677,206 @@ async def reverse_geocode(
     except GeocodeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _place_out(p) if p else None
+
+
+def _relabel(it: Itinerary, from_name: str, to_name: str) -> Itinerary:
+    """Name the walk legs after the actual stops instead of Origin/Destination."""
+    legs = []
+    for leg in it.legs:
+        upd: dict[str, str] = {}
+        if leg.from_name == "Origin":
+            upd["from_name"] = from_name
+        if leg.to_name == "Destination":
+            upd["to_name"] = to_name
+        legs.append(leg.model_copy(update=upd) if upd else leg)
+    return it.model_copy(update={"legs": legs})
+
+
+def _concat(parts: list[Itinerary]) -> Itinerary:
+    legs = [leg for it in parts for leg in it.legs]
+    rides = [leg for leg in legs if leg.mode is LegMode.RIDE]
+    order = [RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.INFEASIBLE]
+    return Itinerary(
+        legs=legs,
+        total_seconds=sum(it.total_seconds for it in parts),
+        total_distance_m=sum(it.total_distance_m for it in parts),
+        total_cost=round(sum(it.total_cost for it in parts), 2),
+        overall_risk=max((leg.risk for leg in rides), key=order.index, default=RiskLevel.LOW),
+        # Bikes are docked at every visit; resets are the ones inside each segment.
+        num_transfers=sum(it.num_transfers for it in parts),
+    )
+
+
+def _trip_frontier(segments: list[TripSegmentOut], max_solutions: int) -> list[TripOptionOut]:
+    """Pareto-optimal whole-trip combinations of per-segment options.
+
+    Every segment's candidate set is its frontier plus its hard-constraint route
+    (index -1). Combinations are enumerated segment by segment and pruned by
+    dominance after each step, so the work stays proportional to the frontier
+    size rather than to the full cartesian product.
+    """
+    partial: list[tuple[float, float, list[int], list[Itinerary]]] = [(0.0, 0.0, [], [])]
+    for seg in segments:
+        candidates: list[tuple[int, Itinerary]] = list(enumerate(seg.options))
+        if seg.hard_constraint is not None:
+            candidates.append((-1, seg.hard_constraint))
+        if not candidates:
+            return []
+        grown = [
+            (t + c.total_seconds, m + c.total_cost, [*idx, i], [*its, c])
+            for t, m, idx, its in partial
+            for i, c in candidates
+        ]
+        grown.sort(key=lambda g: (g[0], g[1]))
+        partial = []
+        best_cost = float("inf")
+        for g in grown:  # sorted by time: keep only strictly cheaper survivors
+            if g[1] < best_cost - 1e-9:
+                partial.append(g)
+                best_cost = g[1]
+    return [
+        TripOptionOut(itinerary=_concat(its), choices=idx)
+        for _, _, idx, its in partial[:max_solutions]
+    ]
+
+
+def _parse_stops(raw: str, names: str | None) -> list[StopOut]:
+    labels = [n.strip() for n in names.split("|")] if names else []
+    stops: list[StopOut] = []
+    for i, part in enumerate(raw.split(";")):
+        try:
+            lat_s, lon_s = part.split(",")
+            lat, lon = float(lat_s), float(lon_s)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"bad stop #{i + 1}: {part!r}") from exc
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise HTTPException(status_code=422, detail=f"stop #{i + 1} out of range")
+        name = labels[i] if i < len(labels) and labels[i] else f"Stop {i + 1}"
+        stops.append(StopOut(lat=lat, lon=lon, name=name))
+    if not 2 <= len(stops) <= 8:
+        raise HTTPException(status_code=422, detail="a trip needs between 2 and 8 stops")
+    return stops
+
+
+@router.get("/trip", response_model=TripResponse, tags=["routing"])
+async def trip(
+    stops: str = Query(
+        ..., description="Semicolon-separated lat,lon pairs, 2 to 8 stops in order."
+    ),
+    names: str | None = Query(None, description="Pipe-separated stop names, same order."),
+    round_trip: bool = Query(False, description="Return to the first stop at the end."),
+    vehicle: VehicleType = VehicleType.EFIT,
+    limit: float = _limit(),
+    max_risk: RiskLevel = _max_risk(),  # noqa: B008 -- FastAPI Query default
+    max_solutions: int = Query(6, ge=1, le=20),
+    geometry: bool = _geom(),
+) -> TripResponse:
+    """A trip through several places, optionally back to the start.
+
+    Each visit means docking near the place, so the trip is a chain of door-to-door
+    segments planned independently; the whole-trip options are the Pareto-optimal
+    combinations of the segments' options.
+    """
+    stop_list = _parse_stops(stops, names)
+    if round_trip:
+        first = stop_list[0]
+        stop_list.append(StopOut(lat=first.lat, lon=first.lon, name=first.name))
+    t0 = time.perf_counter()
+    segments: list[TripSegmentOut] = []
+    generated = pruned = settled = 0
+    routed_all = True
+    for i in range(len(stop_list) - 1):
+        a, b = stop_list[i], stop_list[i + 1]
+        planner, origin, destination, walks, routed = await _prepare(
+            a.lat, a.lon, b.lat, b.lon, vehicle, limit
+        )
+        routed_all = routed_all and routed
+        naive = hard = None
+        options: list[Itinerary] = []
+        with suppress(NoRouteFound):
+            naive = _relabel(
+                planner.plan_naive_baseline(origin, destination, vehicle, walks), a.name, b.name
+            )
+        with suppress(NoRouteFound):
+            hard = _relabel(
+                planner.plan_hard_constraint(origin, destination, vehicle, walks, max_risk),
+                a.name,
+                b.name,
+            )
+        with suppress(NoRouteFound):
+            options = [
+                _relabel(o, a.name, b.name)
+                for o in planner.plan_pareto(origin, destination, vehicle, max_solutions, walks)
+            ]
+        st = planner.last_stats
+        generated += st.labels_generated
+        pruned += st.labels_pruned
+        settled += st.labels_settled
+        if naive is None and hard is None and not options:
+            raise HTTPException(status_code=404, detail=f"no itinerary from {a.name} to {b.name}")
+        segments.append(
+            TripSegmentOut(
+                from_stop=i, to_stop=i + 1, naive=naive, hard_constraint=hard, options=options
+            )
+        )
+    ms = (time.perf_counter() - t0) * 1000
+
+    naive_all = (
+        _concat([s.naive for s in segments if s.naive is not None])
+        if all(s.naive is not None for s in segments)
+        else None
+    )
+    hard_all = (
+        _concat([s.hard_constraint for s in segments if s.hard_constraint is not None])
+        if all(s.hard_constraint is not None for s in segments)
+        else None
+    )
+    options_all = _trip_frontier(segments, max_solutions)
+
+    if geometry:
+        for seg in segments:
+            seg.options = list(await asyncio.gather(*(_with_geometry(o) for o in seg.options)))
+            seg.naive = await _with_geometry(seg.naive) if seg.naive else None
+            seg.hard_constraint = (
+                await _with_geometry(seg.hard_constraint) if seg.hard_constraint else None
+            )
+        # Re-assemble from the decorated segments so the polylines come along.
+        naive_all = (
+            _concat([s.naive for s in segments if s.naive is not None]) if naive_all else None
+        )
+        hard_all = (
+            _concat([s.hard_constraint for s in segments if s.hard_constraint is not None])
+            if hard_all
+            else None
+        )
+        options_all = [
+            TripOptionOut(
+                itinerary=_concat(
+                    [
+                        seg.hard_constraint if i == -1 else seg.options[i]  # type: ignore[misc]
+                        for seg, i in zip(segments, o.choices, strict=True)
+                    ]
+                ),
+                choices=o.choices,
+            )
+            for o in options_all
+        ]
+
+    stats = SearchStats(
+        labels_generated=generated,
+        labels_pruned=pruned,
+        labels_settled=settled,
+        frontier_size=len(options_all),
+    )
+    return TripResponse(
+        stops=stop_list,
+        round_trip=round_trip,
+        segments=segments,
+        naive=naive_all,
+        hard_constraint=hard_all,
+        options=options_all,
+        stats=_stats(stats, ms, routed_all),
+    )
 
 
 @router.get("/", include_in_schema=False)

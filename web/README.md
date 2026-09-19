@@ -27,7 +27,10 @@ server-side when the API has a key, the OSM geocoder otherwise. The browser neve
 to Google for search, so a Maps authorisation failure cannot break it. A per-session id
 groups keystrokes and the final selection the way Google bills autocomplete.
 
-The trip (origin, destination, bike, plan) lives in the URL hash, so a plan is shareable.
+Trips can have several stops (add, reorder, remove) and return to the start; each visit
+is marked on the timetable as "bike docked". With a route highlighted, only the stations
+it uses stay on the map. The whole trip (stops, round trip, bike, plan) lives in the URL
+hash, so a plan is shareable.
 
 ## Design
 

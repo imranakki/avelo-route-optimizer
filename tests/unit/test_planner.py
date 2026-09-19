@@ -179,3 +179,27 @@ def test_baseline_can_violate_the_limit(
     it = RoutePlanner(g, cfg).plan_naive_baseline(WEST, EAST)
     ride = next(leg for leg in it.legs if leg.mode is LegMode.RIDE)
     assert ride.duration_seconds > cfg.ride_limit_minutes * 60
+
+
+def test_hard_constraint_splits_high_risk_legs(line_network: dict[str, StationSnapshot]) -> None:
+    """A single hop that fits the limit but sits above 95% of it is a coin flip in
+    reality, so the constrained planner prefers a reset at an intermediate station."""
+    from avelo.models import RiskLevel
+
+    # The 0 -> 2 hop takes ~24.3 min here: within a 25-min limit, but above 95% of it.
+    cfg = Settings(
+        ride_limit_minutes=25.0, max_edge_distance_km=20.0, max_neighbours_per_station=99
+    )
+    g = StationGraph(line_network, CostModel(cfg), cfg)
+    g.build(VehicleType.EFIT)
+    near_2 = Coord(lat=46.8139, lon=-71.28 + 2 * 0.026 + 0.0005)
+    edge = next(e for e in g.neighbours("0") if e.to_id == "2")
+    assert edge.is_within_limit and edge.risk is RiskLevel.HIGH, "fixture must produce a HIGH leg"
+
+    planner = RoutePlanner(g, cfg)
+    safe = planner.plan_hard_constraint(WEST, near_2)
+    assert safe.num_transfers >= 1
+    assert all(leg.risk is not RiskLevel.HIGH for leg in safe.legs if leg.mode is LegMode.RIDE)
+
+    risky = planner.plan_hard_constraint(WEST, near_2, max_risk=RiskLevel.HIGH)
+    assert risky.num_transfers == 0 and risky.total_seconds < safe.total_seconds

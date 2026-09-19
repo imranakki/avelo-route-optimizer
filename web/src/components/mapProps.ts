@@ -5,15 +5,22 @@ export type MapPoint = { lat: number; lon: number };
 /** The contract both map providers implement, so TripPlanner can swap them. */
 export type MapProps = {
   stations: Station[];
-  origin: MapPoint | null;
-  destination: MapPoint | null;
+  // The trip's stops in order (a round trip does not repeat the first one here).
+  stops: (MapPoint | null)[];
   itinerary: Itinerary | null; // the highlighted one
   ghost: Itinerary | null; // faint comparison (the direct ride)
   lineColor: string; // a CSS custom property, e.g. "var(--limit)"
   onClick: (p: MapPoint) => void;
   onStationClick: (s: Station) => void;
-  onDragEnd: (role: "origin" | "destination", p: MapPoint) => void;
+  onDragEnd: (index: number, p: MapPoint) => void;
 };
+
+/** Pin colour by position: start, intermediate visits, end. */
+export function stopColor(index: number, count: number): string {
+  if (index === 0) return "var(--origin)";
+  if (index === count - 1) return "var(--destination)";
+  return "var(--ink)";
+}
 
 /** MapLibre and Google paint values must be real colours; the UI passes CSS custom properties. */
 export function resolveColor(value: string): string {

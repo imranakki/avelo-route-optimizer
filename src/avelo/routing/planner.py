@@ -194,9 +194,11 @@ class RoutePlanner:
         vehicle: VehicleType,
         walks: WalkContext,
         within_limit_only: bool,
+        max_risk: RiskLevel = RiskLevel.INFEASIBLE,
     ) -> dict[str, list[_Arc]]:
         arcs: dict[str, list[_Arc]] = {ORIGIN: [], DESTINATION: []}
         snaps = self.graph.snapshots
+        risk_cap = _RISK_ORDER.index(max_risk)
 
         for sid, metres in self._candidates(
             origin, self.graph.rentable_stations(vehicle), walks.origin_m
@@ -251,6 +253,8 @@ class RoutePlanner:
         for sid in snaps:
             for edge in self.graph.neighbours(sid):
                 if within_limit_only and not edge.is_within_limit:
+                    continue
+                if _RISK_ORDER.index(edge.risk) > risk_cap:
                     continue
                 arcs.setdefault(sid, []).append(
                     _Arc(
@@ -320,13 +324,39 @@ class RoutePlanner:
         destination: Coord,
         vehicle: VehicleType = VehicleType.EFIT,
         walks: WalkContext | None = None,
+        max_risk: RiskLevel = RiskLevel.MEDIUM,
     ) -> Itinerary:
         """Fastest itinerary in which every ride leg respects the limit.
 
-        Plain Dijkstra over the limit-filtered virtual graph. Raises NoRouteFound
-        if the destination is unreachable.
+        Plain Dijkstra over the limit-filtered virtual graph. `max_risk` is the
+        worst per-leg risk accepted: with the default (MEDIUM) a leg estimated
+        above 95% of the limit is refused and the route is split at a nearby
+        station instead, because the estimate is a mean and a leg that close to
+        the limit is a coin flip. If nothing reaches the destination under that
+        cap, the cap is relaxed one level at a time before giving up, so a safe
+        route is preferred but a merely feasible one is still returned.
+
+        Raises NoRouteFound if the destination is unreachable.
         """
-        arcs = self._build_arcs(origin, destination, vehicle, walks or WalkContext(), True)
+        caps = _RISK_ORDER[_RISK_ORDER.index(max_risk) : _RISK_ORDER.index(RiskLevel.HIGH) + 1]
+        last_error: NoRouteFound | None = None
+        for cap in caps:
+            try:
+                return self._dijkstra(origin, destination, vehicle, walks or WalkContext(), cap)
+            except NoRouteFound as exc:
+                last_error = exc
+        assert last_error is not None
+        raise last_error
+
+    def _dijkstra(
+        self,
+        origin: Coord,
+        destination: Coord,
+        vehicle: VehicleType,
+        walks: WalkContext,
+        max_risk: RiskLevel,
+    ) -> Itinerary:
+        arcs = self._build_arcs(origin, destination, vehicle, walks, True, max_risk)
         if not arcs[ORIGIN]:
             raise NoRouteFound(
                 "no station with an available bike within 2 km of the origin right now"

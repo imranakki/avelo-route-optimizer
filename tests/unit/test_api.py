@@ -243,3 +243,42 @@ def test_geocode_prefers_google_places_and_resolves_location(
             place = c.get("/geocode/place", params={"id": "ChIJ123"}).json()
             assert place["lat"] == 46.7812 and place["name"] == "Université Laval"
     get_settings.cache_clear()
+
+
+def test_trip_chains_segments_and_returns_home(client: TestClient) -> None:
+    """Three stops with a round trip = three segments back to the start; the combined
+    frontier is non-dominated and every option has one choice per segment."""
+    home = f"{WEST['from_lat']},{WEST['from_lon']}"
+    office = f"{EAST['to_lat']},{EAST['to_lon']}"
+    r = client.get(
+        "/trip",
+        params={
+            "stops": f"{home};46.8139,-71.228;{office}",
+            "names": "Home|Café|Office",
+            "round_trip": "true",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [s["name"] for s in body["stops"]] == ["Home", "Café", "Office", "Home"]
+    assert len(body["segments"]) == 3
+    hard = body["hard_constraint"]
+    assert hard["legs"][0]["from_name"] == "Home" and hard["legs"][-1]["to_name"] == "Home"
+    assert hard["total_seconds"] == pytest.approx(
+        sum(s["hard_constraint"]["total_seconds"] for s in body["segments"])
+    )
+    assert all(leg["duration_seconds"] <= 1800 for leg in hard["legs"] if leg["mode"] == "RIDE")
+    opts = body["options"]
+    assert opts and all(len(o["choices"]) == 3 for o in opts)
+    for a in opts:
+        for b in opts:
+            ia, ib = a["itinerary"], b["itinerary"]
+            if a is not b:
+                assert not (
+                    ia["total_seconds"] <= ib["total_seconds"]
+                    and ia["total_cost"] < ib["total_cost"]
+                )
+
+
+def test_trip_rejects_a_single_stop(client: TestClient) -> None:
+    assert client.get("/trip", params={"stops": "46.81,-71.2"}).status_code == 422
