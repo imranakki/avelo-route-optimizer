@@ -83,6 +83,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[TestClie
     monkeypatch.setenv("AVELO_USE_OSRM", "false")
     monkeypatch.setenv("AVELO_CACHE_DIR", str(tmp_path))
     monkeypatch.setenv("AVELO_MAX_EDGE_DISTANCE_KM", "20")
+    monkeypatch.setenv("AVELO_GOOGLE_MAPS_API_KEY", "")  # a developer .env must not leak in
     get_settings.cache_clear()
     from avelo.api import app as app_module
 
@@ -180,3 +181,65 @@ def test_geocode_proxies_and_normalises_results(client: TestClient) -> None:
 
 def test_geocode_rejects_empty_query(client: TestClient) -> None:
     assert client.get("/geocode", params={"q": ""}).status_code == 422
+
+
+def test_ride_limit_is_per_request(client: TestClient) -> None:
+    """A 45-minute plan admits longer single hops than a 30-minute one."""
+    short = client.get("/route", params={**WEST, **EAST, "limit": 15}).json()["itinerary"]
+    long = client.get("/route", params={**WEST, **EAST, "limit": 60}).json()["itinerary"]
+    assert short["num_transfers"] > long["num_transfers"]
+    assert client.get("/health").json()["graphs_cached"] == ["EFIT/15", "EFIT/60"]
+
+
+def test_geocode_prefers_google_places_and_resolves_location(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("AVELO_GBFS_ROOT", ROOT)
+    monkeypatch.setenv("AVELO_GBFS_LANGUAGE", "en")
+    monkeypatch.setenv("AVELO_ELEVATION_API", ELEV)
+    monkeypatch.setenv("AVELO_USE_OSRM", "false")
+    monkeypatch.setenv("AVELO_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("AVELO_GOOGLE_MAPS_API_KEY", "test-key")
+    get_settings.cache_clear()
+    from avelo.api import app as app_module
+
+    with respx.mock(assert_all_called=False) as router:
+        _mock_upstreams(router)
+        auto = router.post(host="places.googleapis.com", path__startswith="/v1/places").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "suggestions": [
+                        {
+                            "placePrediction": {
+                                "placeId": "ChIJ123",
+                                "types": ["university"],
+                                "structuredFormat": {
+                                    "mainText": {"text": "Université Laval"},
+                                    "secondaryText": {"text": "Rue de l'Université, Québec, QC"},
+                                },
+                            }
+                        }
+                    ]
+                },
+            )
+        )
+        router.get(host="places.googleapis.com", path="/v1/places/ChIJ123").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "location": {"latitude": 46.7812, "longitude": -71.2741},
+                    "displayName": {"text": "Université Laval"},
+                    "formattedAddress": "2325 Rue de l'Université, Québec, QC",
+                },
+            )
+        )
+        with TestClient(app_module.app) as c:
+            body = c.get("/geocode", params={"q": "universite laval", "session": "abc"}).json()
+            assert body["provider"] == "google"
+            assert body["results"][0]["place_id"] == "ChIJ123" and body["results"][0]["lat"] is None
+            assert auto.calls.last.request.headers["X-Goog-Api-Key"] == "test-key"
+            assert b'"sessionToken":"abc"' in auto.calls.last.request.content.replace(b" ", b"")
+            place = c.get("/geocode/place", params={"id": "ChIJ123"}).json()
+            assert place["lat"] == 46.7812 and place["name"] == "Université Laval"
+    get_settings.cache_clear()

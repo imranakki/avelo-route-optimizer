@@ -142,8 +142,12 @@ class Settings(BaseSettings):
     walk_candidates: int = 5
 
     # --- Geocoding (place search for the web UI) --------------------------------
-    # Photon (komoot) is an OSM geocoder that permits autocomplete-style queries.
-    # Results are biased to Québec City and restricted to its bounding box.
+    # Google Places (New) when a key is configured -- proxied server-side so the
+    # browser never talks to Google directly and the key's restrictions apply here.
+    # Photon (komoot), an OSM geocoder that permits autocomplete-style queries, is
+    # the fallback and handles reverse geocoding. Both are clipped to Québec City.
+    google_maps_api_key: str = ""
+    google_places_url: str = "https://places.googleapis.com/v1"
     geocoder_url: str = "https://photon.komoot.io/api/"
     geocoder_bbox: str = "-71.60,46.65,-70.95,47.00"  # min_lon,min_lat,max_lon,max_lat
     geocoder_bias_lat: float = 46.8139

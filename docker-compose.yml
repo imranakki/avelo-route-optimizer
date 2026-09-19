@@ -37,6 +37,8 @@ services:
       AVELO_OSRM_WALK_ROOT: http://osrm-foot:5000
       AVELO_OSRM_TABLE_MAX_COORDS: "1000"
       AVELO_OSRM_REQUEST_DELAY_SECONDS: "0"
+      # Google Places for search (optional; OSM otherwise). Set in the shell or a .env.
+      AVELO_GOOGLE_MAPS_API_KEY: ${AVELO_GOOGLE_MAPS_API_KEY:-}
     volumes:
       - ./data/cache:/app/data/cache
     ports:
@@ -44,7 +46,11 @@ services:
     restart: unless-stopped
 
   web:
-    build: ./web
+    build:
+      context: ./web
+      args:
+        # Browser key for the Google base map (optional; OpenStreetMap otherwise).
+        NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${NEXT_PUBLIC_GOOGLE_MAPS_API_KEY:-}
     depends_on: [api]
     environment:
       API_URL: http://api:8000

@@ -39,7 +39,7 @@ from avelo import __version__
 from avelo.config import Settings, get_settings
 from avelo.data.elevation import ElevationClient
 from avelo.data.gbfs import GBFSClient, GBFSError
-from avelo.data.geocode import GeocodeError, Geocoder
+from avelo.data.geocode import GeocodeError, Geocoder, Place
 from avelo.data.osrm import OSRMClient
 from avelo.models import Coord, Itinerary, LegMode, StationSnapshot, VehicleType
 from avelo.routing.cost import CostModel
@@ -70,7 +70,8 @@ class AppState:
     cost: CostModel
     geocoder: Geocoder
     distances: dict[PairKey, float] = field(default_factory=dict)
-    graphs: dict[VehicleType, _CachedGraph] = field(default_factory=dict)
+    # Keyed by (vehicle, ride limit in minutes): the limit changes edge costs.
+    graphs: dict[tuple[VehicleType, float], _CachedGraph] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     started_at: float = field(default_factory=time.time)
 
@@ -93,15 +94,24 @@ async def _snapshots(st: AppState) -> dict[str, StationSnapshot]:
     }
 
 
-async def _current_graph(vehicle: VehicleType) -> StationGraph:
-    """The routing graph for `vehicle`, rebuilt at most once per status TTL."""
+def _settings_for(limit: float) -> Settings:
+    base = _state().settings
+    if limit == base.ride_limit_minutes:
+        return base
+    return base.model_copy(update={"ride_limit_minutes": limit})
+
+
+async def _current_graph(vehicle: VehicleType, limit: float) -> StationGraph:
+    """The routing graph for `vehicle` under a ride limit, rebuilt at most once per
+    status TTL. The limit is per request because riders hold 30- or 45-minute plans."""
     st = _state()
     ttl = st.settings.station_status_ttl_seconds
-    hit = st.graphs.get(vehicle)
+    key = (vehicle, limit)
+    hit = st.graphs.get(key)
     if hit is not None and time.monotonic() - hit.built_at < ttl:
         return hit.graph
     async with st.lock:
-        hit = st.graphs.get(vehicle)  # another request may have built it meanwhile
+        hit = st.graphs.get(key)  # another request may have built it meanwhile
         if hit is not None and time.monotonic() - hit.built_at < ttl:
             return hit.graph
         try:
@@ -114,17 +124,19 @@ async def _current_graph(vehicle: VehicleType) -> StationGraph:
                 status_code=503, detail=f"upstream feed unavailable: {exc}"
             ) from exc
         t0 = time.perf_counter()
-        graph = StationGraph(snaps, st.cost, st.settings, st.distances)
+        settings = _settings_for(limit)
+        graph = StationGraph(snaps, CostModel(settings), settings, st.distances)
         graph.build(vehicle)
         log.info(
-            "built %s graph: %d stations, %d edges, %.0f%% street-routed, %.0f ms",
+            "built %s/%.0f-min graph: %d stations, %d edges, %.0f%% street-routed, %.0f ms",
             vehicle,
+            limit,
             len(snaps),
             graph.edge_count,
             graph.measured_edge_fraction * 100,
             (time.perf_counter() - t0) * 1000,
         )
-        st.graphs[vehicle] = _CachedGraph(graph, time.monotonic())
+        st.graphs[key] = _CachedGraph(graph, time.monotonic())
         return graph
 
 
@@ -312,13 +324,18 @@ class CompareResponse(BaseModel):
 class PlaceOut(BaseModel):
     name: str
     label: str
-    lat: float
-    lon: float
+    lat: float | None = Field(
+        description="Known immediately for OSM results; resolve Google ones via /geocode/place."
+    )
+    lon: float | None = None
     kind: str
+    place_id: str | None = None
+    provider: str
 
 
 class GeocodeResponse(BaseModel):
     query: str
+    provider: str
     results: list[PlaceOut]
 
 
@@ -352,10 +369,15 @@ def _coords(from_lat: float, from_lon: float, to_lat: float, to_lon: float) -> t
 
 
 async def _prepare(
-    from_lat: float, from_lon: float, to_lat: float, to_lon: float, vehicle: VehicleType
+    from_lat: float,
+    from_lon: float,
+    to_lat: float,
+    to_lon: float,
+    vehicle: VehicleType,
+    limit: float,
 ) -> tuple[RoutePlanner, Coord, Coord, WalkContext, bool]:
     origin, destination = _coords(from_lat, from_lon, to_lat, to_lon)
-    graph = await _current_graph(vehicle)
+    graph = await _current_graph(vehicle, limit)
     if not graph.rentable_stations(vehicle):
         # A real state of the network, not a routing failure: àVélo's fleet is
         # currently all-electric, so ICONIC/FIT requests land here.
@@ -364,7 +386,7 @@ async def _prepare(
             detail=f"no {vehicle.value} bikes are available anywhere in the network right now",
         )
     walks, routed = await _walk_context(graph, origin, destination, vehicle)
-    return RoutePlanner(graph, _state().settings), origin, destination, walks, routed
+    return RoutePlanner(graph, _settings_for(limit)), origin, destination, walks, routed
 
 
 # Fresh Query objects per parameter: FastAPI binds the alias onto the instance, so a
@@ -375,6 +397,15 @@ def _lat() -> float:
 
 def _lon() -> float:
     return Query(..., ge=-180, le=180, description="WGS84 longitude")  # type: ignore[no-any-return]
+
+
+def _limit() -> float:
+    return Query(  # type: ignore[no-any-return]
+        30.0,
+        ge=15,
+        le=90,
+        description="Ride limit of the rider's plan in minutes (àVélo: 30 or 45).",
+    )
 
 
 def _geom() -> bool:
@@ -393,7 +424,7 @@ async def health() -> HealthResponse:
         uptime_seconds=round(time.time() - st.started_at, 1),
         stations_cached=len(st.elevation._cache),
         street_pairs_cached=len(st.distances),
-        graphs_cached=[v.value for v in st.graphs],
+        graphs_cached=[f"{v.value}/{lim:.0f}" for v, lim in st.graphs],
         ride_limit_minutes=st.settings.ride_limit_minutes,
     )
 
@@ -432,11 +463,12 @@ async def route(
     to_lat: float = _lat(),
     to_lon: float = _lon(),
     vehicle: VehicleType = VehicleType.EFIT,
+    limit: float = _limit(),
     geometry: bool = _geom(),
 ) -> RouteResponse:
     """Fastest itinerary in which every ride leg respects the ride limit ($0 overage)."""
     planner, origin, destination, walks, routed = await _prepare(
-        from_lat, from_lon, to_lat, to_lon, vehicle
+        from_lat, from_lon, to_lat, to_lon, vehicle, limit
     )
     t0 = time.perf_counter()
     try:
@@ -456,12 +488,13 @@ async def route_options(
     to_lat: float = _lat(),
     to_lon: float = _lon(),
     vehicle: VehicleType = VehicleType.EFIT,
+    limit: float = _limit(),
     max_solutions: int = Query(5, ge=1, le=20),
     geometry: bool = _geom(),
 ) -> OptionsResponse:
     """The time/cost Pareto frontier: every option is non-dominated, fastest first."""
     planner, origin, destination, walks, routed = await _prepare(
-        from_lat, from_lon, to_lat, to_lon, vehicle
+        from_lat, from_lon, to_lat, to_lon, vehicle, limit
     )
     t0 = time.perf_counter()
     try:
@@ -483,11 +516,12 @@ async def route_baseline(
     to_lat: float = _lat(),
     to_lon: float = _lon(),
     vehicle: VehicleType = VehicleType.EFIT,
+    limit: float = _limit(),
     geometry: bool = _geom(),
 ) -> RouteResponse:
     """The naive control: nearest station to nearest station, one ride, limit ignored."""
     planner, origin, destination, walks, routed = await _prepare(
-        from_lat, from_lon, to_lat, to_lon, vehicle
+        from_lat, from_lon, to_lat, to_lon, vehicle, limit
     )
     t0 = time.perf_counter()
     try:
@@ -507,12 +541,13 @@ async def route_compare(
     to_lat: float = _lat(),
     to_lon: float = _lon(),
     vehicle: VehicleType = VehicleType.EFIT,
+    limit: float = _limit(),
     max_solutions: int = Query(5, ge=1, le=20),
     geometry: bool = _geom(),
 ) -> CompareResponse:
     """All three strategies for one trip, side by side. 404 only if none can route."""
     planner, origin, destination, walks, routed = await _prepare(
-        from_lat, from_lon, to_lat, to_lon, vehicle
+        from_lat, from_lon, to_lat, to_lon, vehicle, limit
     )
     t0 = time.perf_counter()
     naive: Itinerary | None = None
@@ -542,23 +577,49 @@ async def route_compare(
     )
 
 
+def _place_out(p: Place) -> PlaceOut:
+    return PlaceOut(
+        name=p.name,
+        label=p.label,
+        lat=p.lat,
+        lon=p.lon,
+        kind=p.kind,
+        place_id=p.place_id,
+        provider=p.provider,
+    )
+
+
 @router.get("/geocode", response_model=GeocodeResponse, tags=["data"])
 async def geocode(
     q: str = Query(..., min_length=1, max_length=200, description="Free-text place query"),
     limit: int = Query(6, ge=1, le=10),
     lang: str = Query("fr", pattern="^(fr|en)$"),
+    session: str | None = Query(None, max_length=64, description="Autocomplete session id"),
 ) -> GeocodeResponse:
     """Place search within Québec City, for picking an origin or destination."""
+    geocoder = _state().geocoder
     try:
-        places = await _state().geocoder.search(q, limit, lang)
+        places = await geocoder.search(q, limit, lang, session)
     except GeocodeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return GeocodeResponse(
-        query=q,
-        results=[
-            PlaceOut(name=p.name, label=p.label, lat=p.lat, lon=p.lon, kind=p.kind) for p in places
-        ],
+        query=q, provider=geocoder.provider, results=[_place_out(p) for p in places]
     )
+
+
+@router.get("/geocode/place", response_model=PlaceOut, tags=["data"])
+async def geocode_place(
+    id: str = Query(..., min_length=1, max_length=300, description="Google place id"),
+    session: str | None = Query(None, max_length=64),
+) -> PlaceOut:
+    """Location of a place returned by /geocode without coordinates."""
+    try:
+        p = await _state().geocoder.resolve(id, session)
+    except GeocodeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if p is None:
+        raise HTTPException(status_code=404, detail="unknown place")
+    return _place_out(p)
 
 
 @router.get("/geocode/reverse", response_model=PlaceOut | None, tags=["data"])
@@ -570,7 +631,7 @@ async def reverse_geocode(
         p = await _state().geocoder.reverse(lat, lon, lang)
     except GeocodeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return PlaceOut(name=p.name, label=p.label, lat=p.lat, lon=p.lon, kind=p.kind) if p else None
+    return _place_out(p) if p else None
 
 
 @router.get("/", include_in_schema=False)

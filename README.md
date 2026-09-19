@@ -70,8 +70,9 @@ climb), of which àVélo currently has none in service.
 - **A production API**: FastAPI, lifespan-managed clients, a TTL-cached routing graph
   behind a lock, CORS, gzip, typed responses, structured 404/503s, health endpoint,
   place search and reverse geocoding (`/geocode`), Dockerfile, docker-compose.
-- **A web app** (`web/`, Next.js + MapLibre): search for places or drop pins, pick a
-  bike type, and every strategy is planned and drawn on real streets with resets marked.
+- **A web app** (`web/`, Next.js): place search (Google Places or OSM), pins on a Google
+  Maps or OpenStreetMap base map, bike type and 30/45-minute plan, and every strategy
+  drawn on real streets as a timetable with reset stops marked and a time/money chart.
 
 ## Quick start
 
@@ -96,10 +97,11 @@ committed cache means a fresh clone routes immediately.
 | `GET /route/options` | the time/cost Pareto frontier (`max_solutions`) |
 | `GET /route/baseline` | the naive control |
 | `GET /route/compare` | all three side by side |
-| `GET /geocode`, `/geocode/reverse` | place search within Québec City (Photon/OSM, cached) |
+| `GET /geocode`, `/geocode/place`, `/geocode/reverse` | place search within Québec City (Google Places or OSM, cached) |
 
 All routing endpoints take `from_lat, from_lon, to_lat, to_lon`, `vehicle` (`EFIT`,
-`ICONIC`, …) and `geometry=true` for street polylines. OpenAPI docs at `/docs`.
+`ICONIC`, …), `limit` (the rider's plan: 30 or 45 minutes) and `geometry=true` for
+street polylines. OpenAPI docs at `/docs`.
 
 ```bash
 curl "localhost:8000/route/options?from_lat=46.8127&from_lon=-71.2024&to_lat=46.7817&to_lon=-71.2747"
@@ -147,11 +149,12 @@ OSRM matrix ───┘   (static + live)      (time-pruned      ├─ Dijkstr
 | `routing/graph.py` | station roles (start / reset / end) and time-pruned edges |
 | `routing/planner.py` | Dijkstra, Martins' bi-criteria search, baseline |
 | `evaluation/harness.py` | density-weighted trip sampling, metrics, ablation |
-| `data/geocode.py` | place search / reverse geocoding via Photon, cached |
+| `data/geocode.py` | place search: Google Places (New) or Photon/OSM, cached |
 | `api/app.py` | FastAPI service and the static map |
 
-`web/` — Next.js app: `PlaceSearch` (autocomplete), `MapView` (MapLibre), `ResultsPanel`,
-`TripPlanner` (state), `lib/api.ts` (typed client).
+`web/` — Next.js app: `PlaceSearch`, `GoogleMapView` / `MapLibreView` (one contract, runtime
+fallback), `ResultsPanel` (headline, frontier chart, timetable), `TripPlanner` (state, URL
+hash), `lib/api.ts` (typed client). See `web/README.md`.
 
 Because it codes against the GBFS open standard rather than àVélo specifically, the same
 system runs on Bixi, Citi Bike, Vélib' and ~600 other networks by changing one URL.
