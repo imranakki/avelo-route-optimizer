@@ -148,9 +148,9 @@ def test_invalid_coordinates_are_422(client: TestClient) -> None:
     assert client.get("/route", params={**WEST, "to_lat": 95, "to_lon": 0}).status_code == 422
 
 
-def test_index_serves_the_map(client: TestClient) -> None:
-    r = client.get("/")
-    assert r.status_code == 200 and "leaflet" in r.text.lower()
+def test_index_redirects_to_the_openapi_docs(client: TestClient) -> None:
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"] == "/docs"
 
 
 def test_geocode_proxies_and_normalises_results(client: TestClient) -> None:

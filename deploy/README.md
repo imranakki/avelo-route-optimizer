@@ -1,5 +1,12 @@
 # Deploying
 
+**Current deployment (2026-09-19):** Google Cloud project `avelo-route-optimizer`,
+always-free `e2-micro` VM `avelo` in `us-central1-a`, public IP `35.232.111.254`.
+The whole stack (Caddy, API, both OSRM routers, and the web app) runs there from
+pre-built images; see "Free-tier VM" below. Google keys live in that project only,
+capped at 300 map loads / 300 autocompletes / 300 place lookups per day, with a
+$5 budget alert.
+
 Two halves: the **web app on Vercel** (free) and the **API + routers on a VPS**,
 fronted by one Caddy instance that can serve any number of projects on subdomains
 of `imranakki.com`.
@@ -27,6 +34,29 @@ mkdir -p /srv/caddy && cd /srv/caddy
 # copy deploy/Caddyfile and deploy/docker-compose.caddy.yml here
 docker compose -f docker-compose.caddy.yml up -d
 ```
+
+## Free-tier VM (what is running now)
+
+An `e2-micro` has 1 GB of RAM, so images are built here and streamed over SSH
+rather than built on the box, and the web app runs on the VM too (behind Caddy)
+until it moves to Vercel. `deploy/docker-compose.vm.yml` is the override in use;
+`deploy/Caddyfile.ip` serves on the bare IP until DNS exists.
+
+```bash
+Z="--project avelo-route-optimizer --zone us-central1-a"
+docker build -t avelo-api:prod .
+docker build -t avelo-web:prod --build-arg NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=<browser key> ./web
+docker save avelo-api:prod avelo-web:prod | gzip -1 | gcloud compute ssh avelo $Z --command "gunzip | docker load"
+gcloud compute ssh avelo $Z --command "cd /srv/avelo && docker compose -f docker-compose.yml -f docker-compose.vm.yml up -d"
+```
+
+Data (`data/osrm/{bicycle,foot}`, `data/cache/*.json`) and `.env` were copied
+with `tar | gcloud compute ssh` / `gcloud compute scp` into `/srv/avelo/`.
+
+When DNS is ready: point `avelo.imranakki.com` at the IP, replace `:80` in
+`/srv/caddy/Caddyfile` with the hostname, `docker compose restart caddy`; Caddy
+obtains the certificate. Then set `AVELO_CORS_ORIGINS=https://avelo.imranakki.com`
+in `/srv/avelo/.env` and restrict the browser key's referrers to that host.
 
 ## This project
 

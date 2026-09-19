@@ -79,7 +79,7 @@ climb), of which àVélo currently has none in service.
 ```bash
 make install     # venv + dependencies
 make test        # offline suite (71 tests, no network)
-make run         # API at http://127.0.0.1:8000 (docs at /docs, a minimal map at /)
+make run         # API at http://127.0.0.1:8000 (OpenAPI docs at /docs)
 make web         # Next.js UI at http://127.0.0.1:3000
 ```
 
@@ -90,7 +90,6 @@ committed cache means a fresh clone routes immediately.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | interactive map |
 | `GET /health` | liveness, cache state |
 | `GET /stations` | live stations with availability, vehicle types, elevation |
 | `GET /route` | fastest itinerary with every ride leg under the limit |
@@ -154,7 +153,7 @@ OSRM matrix ───┘   (static + live)      (time-pruned      ├─ Dijkstr
 | `routing/planner.py` | Dijkstra, Martins' bi-criteria search, baseline |
 | `evaluation/harness.py` | density-weighted trip sampling, metrics, ablation |
 | `data/geocode.py` | place search: Google Places (New) or Photon/OSM, cached |
-| `api/app.py` | FastAPI service and the static map |
+| `api/app.py` | FastAPI service |
 
 `web/` — Next.js app: `PlaceSearch`, `GoogleMapView` / `MapLibreView` (one contract, runtime
 fallback), `ResultsPanel` (headline, frontier chart, timetable), `TripPlanner` (state, URL

@@ -89,8 +89,15 @@ class OSRMClient:
             await self._client.aclose()
 
     def flush(self) -> None:
-        """Write any unsaved geometry to disk."""
+        """Write any unsaved geometry to disk, merged with whatever is there now.
+
+        Several processes share this file (the API, a bulk cache build): a plain
+        overwrite would let a process that loaded 200 entries clobber 28,000 written
+        by another. Re-read and union first; the file is only ever added to.
+        """
         if self._geometry_dirty:
+            on_disk: dict[str, list[list[float]]] = self._load(self._geom_path)
+            self._geometry = {**on_disk, **self._geometry}
             self._save(self._geom_path, self._geometry)
             self._geometry_dirty = 0
 
@@ -159,6 +166,7 @@ class OSRMClient:
                 fetched_any = fetched_any or ok
                 await asyncio.sleep(self.settings.osrm_request_delay_seconds)
         if fetched_any:
+            self._distances = {**self._load(self._dist_path), **self._distances}
             self._save(self._dist_path, self._distances)
 
         out: dict[PairKey, float] = {}

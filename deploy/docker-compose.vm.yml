@@ -1,0 +1,39 @@
+# VM-specific: use the pre-built images (no build on a 1 GB machine), keep the
+# web app here too until it moves to Vercel, no host ports (Caddy fronts both).
+services:
+  api:
+    image: avelo-api:prod
+    build: !reset null
+    ports: !override []
+    environment:
+      AVELO_CORS_ORIGINS: "*"
+    networks: [default, edge]
+    deploy:
+      resources:
+        limits:
+          memory: 450M
+  web:
+    image: avelo-web:prod
+    build: !reset null
+    ports: !override []
+    environment:
+      API_URL: http://api:8000
+    networks: [default, edge]
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+  osrm-bike:
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+  osrm-foot:
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+
+networks:
+  edge:
+    external: true

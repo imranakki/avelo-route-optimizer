@@ -26,13 +26,11 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from avelo import __version__
@@ -47,8 +45,6 @@ from avelo.routing.graph import PairKey, StationGraph
 from avelo.routing.planner import NoRouteFound, RoutePlanner, SearchStats, WalkContext
 
 log = logging.getLogger(__name__)
-
-_STATIC = Path(__file__).parent / "static"
 
 
 # --------------------------------------------------------------------------- state
@@ -884,8 +880,9 @@ async def trip(
 
 
 @router.get("/", include_in_schema=False)
-async def index() -> FileResponse:
-    return FileResponse(_STATIC / "index.html")
+async def index() -> RedirectResponse:
+    """The web app lives elsewhere; the API's own front door is its OpenAPI docs."""
+    return RedirectResponse(url="/docs")
 
 
 @app.exception_handler(Exception)
@@ -956,4 +953,3 @@ async def _timing(request: Request, call_next):  # type: ignore[no-untyped-def]
 
 
 app.include_router(router)
-app.mount("/static", StaticFiles(directory=_STATIC), name="static")
