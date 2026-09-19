@@ -1,56 +1,37 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { api, type Place } from "@/lib/api";
+import { suggest, type Suggestion } from "@/lib/places";
 
-// A resolved endpoint: either a searched place or a pin dropped on the map.
+// A resolved endpoint: a searched place, a station, or a pin dropped on the map.
 export type Endpoint = { lat: number; lon: number; name: string; label: string };
 
 type Props = {
   role: "origin" | "destination";
   value: Endpoint | null;
   onChange: (value: Endpoint | null) => void;
-  onLocate?: () => void; // "use my location" (origin only)
+  onLocate?: () => void;
   locating?: boolean;
+  autoFocus?: boolean;
 };
 
-const KIND_ICON: Record<string, string> = {
-  university: "🎓",
-  college: "🎓",
-  school: "🏫",
-  hospital: "🏥",
-  station: "🚉",
-  bus_stop: "🚏",
-  park: "🌳",
-  museum: "🏛",
-  restaurant: "🍽",
-  cafe: "☕",
-  library: "📚",
-  mall: "🛍",
-  supermarket: "🛒",
-  stadium: "🏟",
-  attraction: "📍",
-};
-
-export default function PlaceSearch({ role, value, onChange, onLocate, locating }: Props) {
+export default function PlaceSearch({ role, value, onChange, onLocate, locating, autoFocus }: Props) {
   const [query, setQuery] = useState(value ? value.name : "");
   const [prevValue, setPrevValue] = useState(value);
-  const [results, setResults] = useState<Place[]>([]);
+  const [results, setResults] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const listId = useId();
 
-  // Reflect an externally-set value (map click, geolocation) in the input. Done
-  // during render, as React recommends for state derived from props.
+  // Reflect an externally-set value (map click, station, geolocation) in the input.
   if (value !== prevValue) {
     setPrevValue(value);
     setQuery(value ? value.name : "");
   }
 
-  // Debounced search; cancels the in-flight request when the query changes.
   useEffect(() => {
     if (!open) return;
     const q = query.trim();
@@ -63,24 +44,28 @@ export default function PlaceSearch({ role, value, onChange, onLocate, locating 
       abortRef.current?.abort();
       const ctrl = new AbortController();
       abortRef.current = ctrl;
-      setLoading(true);
+      setBusy(true);
       try {
-        setResults(await api.geocode(q, ctrl.signal));
-        setActive(-1);
+        const out = await suggest(q, ctrl.signal);
+        if (!ctrl.signal.aborted) {
+          setResults(out);
+          setActive(-1);
+        }
       } catch (err) {
         if (!(err instanceof DOMException && err.name === "AbortError")) setResults([]);
       } finally {
-        if (abortRef.current === ctrl) setLoading(false);
+        if (abortRef.current === ctrl) setBusy(false);
       }
-    }, idle ? 0 : 220);
+    }, idle ? 0 : 200);
     return () => clearTimeout(timer);
   }, [query, open, value]);
 
-  const pick = (p: Place) => {
-    onChange({ lat: p.lat, lon: p.lon, name: p.name, label: p.label });
+  const pick = async (s: Suggestion) => {
     setOpen(false);
     setResults([]);
     inputRef.current?.blur();
+    const coord = s.coord ?? (s.resolve ? await s.resolve() : null);
+    if (coord) onChange({ ...coord, name: s.name, label: s.label });
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -91,33 +76,28 @@ export default function PlaceSearch({ role, value, onChange, onLocate, locating 
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setActive((a) => (a - 1 + results.length) % results.length);
-    } else if (e.key === "Enter" && active >= 0) {
+    } else if (e.key === "Enter") {
       e.preventDefault();
-      pick(results[active]);
+      void pick(results[active >= 0 ? active : 0]);
     } else if (e.key === "Escape") {
       setOpen(false);
     }
   };
 
-  const dot = role === "origin" ? "bg-accent" : "bg-danger";
-  const placeholder = role === "origin" ? "Starting point — search or click the map" : "Destination — search or click the map";
-
   return (
     <div className="relative">
-      <label className="mb-1 block text-[11px] font-medium uppercase tracking-[0.06em] text-muted">
-        {role === "origin" ? "From" : "To"}
-      </label>
-      <div className="flex items-center gap-2 rounded-lg border border-line bg-panel px-3 focus-within:border-accent">
-        <span aria-hidden className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot}`} />
+      <div className="flex items-center gap-3 border-b border-rule py-2 focus-within:border-ink">
+        <span className="label w-10 shrink-0">{role === "origin" ? "From" : "To"}</span>
         <input
           ref={inputRef}
           value={query}
-          placeholder={placeholder}
+          placeholder={role === "origin" ? "Search a place, or tap the map" : "Where to?"}
           role="combobox"
           aria-expanded={open && results.length > 0}
           aria-controls={listId}
           aria-autocomplete="list"
           autoComplete="off"
+          autoFocus={autoFocus}
           spellCheck={false}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -125,11 +105,11 @@ export default function PlaceSearch({ role, value, onChange, onLocate, locating 
             if (value && e.target.value !== value.name) onChange(null);
           }}
           onFocus={() => setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 120)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
           onKeyDown={onKeyDown}
-          className="min-w-0 flex-1 bg-transparent py-2.5 text-[15px] outline-none placeholder:text-muted/70"
+          className="min-w-0 flex-1 bg-transparent py-1 text-[16px] text-ink outline-none placeholder:text-muted"
         />
-        {loading && <span className="text-xs text-muted">…</span>}
+        {busy && <span className="num text-[11px] text-muted">…</span>}
         {value && (
           <button
             type="button"
@@ -140,12 +120,14 @@ export default function PlaceSearch({ role, value, onChange, onLocate, locating 
               setQuery("");
               inputRef.current?.focus();
             }}
-            className="text-muted hover:text-ink"
+            className="grid h-8 w-8 place-items-center text-muted hover:text-ink"
           >
-            ×
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M2 2l10 10M12 2L2 12" />
+            </svg>
           </button>
         )}
-        {onLocate && (
+        {onLocate && !value && (
           <button
             type="button"
             title="Use my location"
@@ -153,9 +135,9 @@ export default function PlaceSearch({ role, value, onChange, onLocate, locating 
             disabled={locating}
             onMouseDown={(e) => e.preventDefault()}
             onClick={onLocate}
-            className="text-muted hover:text-accent disabled:opacity-50"
+            className="grid h-8 w-8 place-items-center text-muted hover:text-ink disabled:opacity-40"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
               <circle cx="12" cy="12" r="3" />
               <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
               <circle cx="12" cy="12" r="8" />
@@ -163,31 +145,26 @@ export default function PlaceSearch({ role, value, onChange, onLocate, locating 
           </button>
         )}
       </div>
-      {value?.label && <p className="mt-1 truncate pl-5 text-xs text-muted">{value.label}</p>}
+      {value?.label && <p className="mt-1 truncate pl-[52px] text-[12px] text-muted">{value.label}</p>}
 
       {open && results.length > 0 && (
         <ul
           id={listId}
           role="listbox"
-          className="absolute left-0 right-0 z-30 mt-1 max-h-72 overflow-auto rounded-lg border border-line bg-panel py-1 shadow-lg"
+          className="absolute left-0 right-0 z-30 mt-1 max-h-80 overflow-auto border border-rule-strong bg-paper shadow-[0_12px_32px_-12px_rgb(0_0_0/0.35)]"
         >
-          {results.map((p, i) => (
+          {results.map((s, i) => (
             <li
-              key={`${p.lat},${p.lon},${p.name}`}
+              key={s.id}
               role="option"
               aria-selected={i === active}
               onMouseDown={(e) => e.preventDefault()}
               onMouseEnter={() => setActive(i)}
-              onClick={() => pick(p)}
-              className={`flex cursor-pointer items-start gap-2 px-3 py-2 ${i === active ? "bg-panel-2" : ""}`}
+              onClick={() => void pick(s)}
+              className={`cursor-pointer border-b border-rule px-3 py-2 last:border-b-0 ${i === active ? "bg-paper-2" : ""}`}
             >
-              <span className="w-5 text-center text-sm" aria-hidden>
-                {KIND_ICON[p.kind] ?? "📍"}
-              </span>
-              <span className="min-w-0">
-                <span className="block truncate text-[14px]">{p.name}</span>
-                {p.label && <span className="block truncate text-xs text-muted">{p.label}</span>}
-              </span>
+              <span className="block truncate text-[14px] text-ink">{s.name}</span>
+              {s.label && <span className="block truncate text-[12px] text-muted">{s.label}</span>}
             </li>
           ))}
         </ul>

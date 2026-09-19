@@ -68,9 +68,11 @@ export type Station = {
 export type Place = {
   name: string;
   label: string;
-  lat: number;
-  lon: number;
+  lat: number | null; // null for Google results until resolved via api.place()
+  lon: number | null;
   kind: string;
+  place_id: string | null;
+  provider: "google" | "osm";
 };
 
 export class ApiError extends Error {
@@ -100,15 +102,17 @@ async function get<T>(path: string, params: Record<string, string | number | boo
 }
 
 export const api = {
-  geocode: (q: string, signal?: AbortSignal) =>
-    get<{ query: string; results: Place[] }>("/geocode", { q, limit: 6 }, signal).then((r) => r.results),
+  geocode: (q: string, session: string, signal?: AbortSignal) =>
+    get<{ query: string; provider: string; results: Place[] }>("/geocode", { q, limit: 6, session }, signal).then((r) => r.results),
+
+  place: (id: string, session: string) => get<Place>("/geocode/place", { id, session }),
 
   reverse: (c: Coord, signal?: AbortSignal) =>
     get<Place | null>("/geocode/reverse", { lat: c.lat, lon: c.lon }, signal),
 
   stations: () => get<{ count: number; stations: Station[] }>("/stations", {}).then((r) => r.stations),
 
-  compare: (from: Coord, to: Coord, vehicle: Vehicle, signal?: AbortSignal) =>
+  compare: (from: Coord, to: Coord, vehicle: Vehicle, limit: number, signal?: AbortSignal) =>
     get<CompareResponse>(
       "/route/compare",
       {
@@ -117,6 +121,7 @@ export const api = {
         to_lat: to.lat,
         to_lon: to.lon,
         vehicle,
+        limit,
         max_solutions: 8,
         geometry: true,
       },
@@ -125,5 +130,11 @@ export const api = {
 };
 
 export const minutes = (s: number) => `${(s / 60).toFixed(1)} min`;
+/** m:ss style clock for timelines, e.g. 0:00, 12:30. */
+export const clock = (s: number) => {
+  const m = Math.floor(s / 60);
+  const sec = Math.round(s - m * 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+};
 export const money = (d: number) => `$${d.toFixed(2)}`;
 export const km = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`);

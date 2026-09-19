@@ -1,21 +1,21 @@
 "use client";
 
-import { km, minutes, money, type CompareResponse, type Itinerary, type Risk } from "@/lib/api";
+import { clock, km, minutes, money, type CompareResponse, type Itinerary, type Risk } from "@/lib/api";
+import FrontierChart from "./FrontierChart";
 
-export type Choice = { key: string; itinerary: Itinerary; color: string; title: string; tag: string };
-
-const RISK_CLASS: Record<Risk, string> = {
-  LOW: "text-hard",
-  MEDIUM: "text-warn",
-  HIGH: "text-danger",
-  INFEASIBLE: "text-danger",
-};
+export type Choice = { key: string; itinerary: Itinerary; color: string; title: string; kind: "limit" | "frontier" | "naive" };
 
 const RISK_TEXT: Record<Risk, string> = {
   LOW: "low risk",
   MEDIUM: "medium risk",
   HIGH: "high risk",
   INFEASIBLE: "over the limit",
+};
+const RISK_CLASS: Record<Risk, string> = {
+  LOW: "text-limit",
+  MEDIUM: "text-warn",
+  HIGH: "text-danger",
+  INFEASIBLE: "text-danger",
 };
 
 const same = (a: Itinerary | null, b: Itinerary) =>
@@ -24,100 +24,157 @@ const same = (a: Itinerary | null, b: Itinerary) =>
 export function choicesFrom(data: CompareResponse): Choice[] {
   const out: Choice[] = [];
   if (data.hard_constraint) {
-    out.push({ key: "hard", itinerary: data.hard_constraint, color: "var(--hard)", title: "Every leg under the limit", tag: "$0" });
+    out.push({ key: "limit", itinerary: data.hard_constraint, color: "var(--limit)", title: "Every leg under the limit", kind: "limit" });
   }
   let naiveShown = false;
   data.options.forEach((o, i) => {
-    // The constrained route usually reappears as the cheapest frontier point, and the
-    // naive ride often as the fastest; show each itinerary once.
+    // The constrained route usually reappears as the cheapest frontier point and the
+    // direct ride as the fastest; each itinerary appears once.
     if (same(data.hard_constraint, o)) return;
     const isNaive = same(data.naive, o);
     naiveShown ||= isNaive;
-    const tag = i === 0 ? "fastest" : i === data.options.length - 1 ? "cheapest" : "trade-off";
     out.push({
       key: `p${i}`,
       itinerary: o,
-      color: isNaive ? "var(--naive)" : "var(--pareto)",
-      title: isNaive ? "Direct ride (what a nav app suggests)" : `Frontier option ${i + 1}`,
-      tag: isNaive ? `${tag} · naive` : tag,
+      color: isNaive ? "var(--naive)" : "var(--frontier)",
+      title: isNaive ? "Direct ride" : `Trade-off ${i + 1}`,
+      kind: isNaive ? "naive" : "frontier",
     });
   });
   if (data.naive && !naiveShown && !same(data.hard_constraint, data.naive)) {
-    out.push({ key: "naive", itinerary: data.naive, color: "var(--naive)", title: "Naive: one ride, nearest stations", tag: "baseline" });
+    out.push({ key: "naive", itinerary: data.naive, color: "var(--naive)", title: "Direct ride", kind: "naive" });
   }
   return out;
 }
 
-function Card({ choice, selected, onSelect }: { choice: Choice; selected: boolean; onSelect: () => void }) {
+function Headline({ data }: { data: CompareResponse }) {
+  const naive = data.naive;
+  const hard = data.hard_constraint;
+  if (!hard) {
+    return (
+      <p className="serif text-[26px] leading-[1.15] text-ink">
+        No way to keep every leg under the limit — the options below all cost something.
+      </p>
+    );
+  }
+  if (!naive || same(naive, hard) || naive.total_cost === 0) {
+    return (
+      <p className="serif text-[26px] leading-[1.15] text-ink">
+        The direct ride fits the limit. <span className="italic text-muted">Nothing to pay, no reset.</span>
+      </p>
+    );
+  }
+  const saving = naive.total_cost - hard.total_cost;
+  const delta = (hard.total_seconds - naive.total_seconds) / 60;
+  const deltaText = Math.abs(delta) < 0.05 ? "the same time" : delta > 0 ? `${delta.toFixed(1)} more minutes` : `${(-delta).toFixed(1)} fewer minutes`;
+  return (
+    <p className="serif text-[26px] leading-[1.15] text-ink">
+      Reset the clock once{hard.num_transfers > 1 ? ` — ${hard.num_transfers} times —` : ""} and save{" "}
+      <span className="num text-[24px] text-limit">{money(saving)}</span>{" "}
+      <span className="italic text-muted">for {deltaText}.</span>
+    </p>
+  );
+}
+
+function Row({ choice, selected, index, onSelect }: { choice: Choice; selected: boolean; index: number; onSelect: () => void }) {
   const it = choice.itinerary;
-  const rides = it.legs.filter((l) => l.mode === "RIDE");
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
-      className={`w-full rounded-xl border bg-panel p-3 text-left transition-shadow ${
-        selected ? "border-transparent shadow-[0_0_0_2px_var(--ring)]" : "border-line hover:border-muted/60"
+      style={{ animationDelay: `${index * 60}ms` }}
+      className={`rise grid w-full grid-cols-[14px_1fr_auto] items-baseline gap-x-3 border-t border-rule px-1 py-2.5 text-left transition-colors ${
+        selected ? "bg-paper-2" : "hover:bg-paper-2/60"
       }`}
-      style={{ ["--ring" as string]: choice.color }}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span aria-hidden className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: choice.color }} />
-            <span className="truncate text-[13px] font-medium">{choice.title}</span>
-          </div>
-          <div className="tnum mt-1 flex flex-wrap items-baseline gap-x-2 text-[15px]">
-            <span className="font-semibold">{minutes(it.total_seconds)}</span>
-            <span className={it.total_cost > 0 ? "font-semibold text-danger" : "font-semibold text-hard"}>{money(it.total_cost)}</span>
-            <span className="text-xs text-muted">
-              {km(it.total_distance_m)} · {it.num_transfers} reset{it.num_transfers === 1 ? "" : "s"} ·{" "}
-              <span className={RISK_CLASS[it.overall_risk]}>{RISK_TEXT[it.overall_risk]}</span>
-            </span>
-          </div>
-        </div>
-        <span className="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.05em] text-white" style={{ background: choice.color }}>
-          {choice.tag}
+      <span aria-hidden className="mt-1 h-2.5 w-2.5 self-center" style={{ background: choice.color }} />
+      <span className="min-w-0">
+        <span className="block text-[14px] font-medium text-ink">{choice.title}</span>
+        <span className="block text-[12px] text-muted">
+          {km(it.total_distance_m)} · {it.num_transfers} reset{it.num_transfers === 1 ? "" : "s"} ·{" "}
+          <span className={RISK_CLASS[it.overall_risk]}>{RISK_TEXT[it.overall_risk]}</span>
         </span>
-      </div>
-
-      {selected && (
-        <ol className="mt-3 space-y-1.5 border-t border-line pt-2 text-[13px]">
-          {it.legs.map((leg, i) => {
-            const isReset = leg.mode === "RIDE" && it.legs[i + 1]?.mode === "RIDE";
-            return (
-              <li key={i} className="flex gap-2">
-                <span className="w-5 shrink-0 text-center" aria-hidden>
-                  {leg.mode === "WALK" ? "🚶" : "🚲"}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="tnum">
-                    {leg.mode === "WALK" ? "Walk" : "Ride"} {minutes(leg.duration_seconds)} · {km(leg.distance_m)}
-                  </span>
-                  {leg.mode === "RIDE" && (
-                    <span className="text-muted">
-                      {leg.elevation_gain_m > 0 ? ` · +${Math.round(leg.elevation_gain_m)} m` : ""} ·{" "}
-                      <span className={RISK_CLASS[leg.risk]}>{RISK_TEXT[leg.risk]}</span>
-                      {leg.overage_cost > 0 ? <span className="text-danger"> · {money(leg.overage_cost)}</span> : null}
-                    </span>
-                  )}
-                  <span className="block truncate text-muted">
-                    → {leg.to_name}
-                    {isReset && <span className="ml-1 rounded bg-panel-2 px-1 text-[11px] font-medium text-ink">reset</span>}
-                  </span>
-                </span>
-              </li>
-            );
-          })}
-          {rides.length > 0 && (
-            <li className="pt-1 text-xs text-muted">
-              Riding {minutes(rides.reduce((a, l) => a + l.cycling_seconds, 0))}, lights {minutes(rides.reduce((a, l) => a + l.traffic_light_seconds, 0))},
-              docking {minutes(rides.reduce((a, l) => a + l.docking_seconds, 0))}.
-            </li>
-          )}
-        </ol>
-      )}
+      </span>
+      <span className="num text-right">
+        <span className="block text-[15px] text-ink">{minutes(it.total_seconds)}</span>
+        <span className={`block text-[13px] ${it.total_cost > 0 ? "text-danger" : "text-limit"}`}>{money(it.total_cost)}</span>
+      </span>
     </button>
+  );
+}
+
+/** The selected itinerary as a timetable: cumulative clock on the left, a rail with stops. */
+function Timeline({ it, color }: { it: Itinerary; color: string }) {
+  const rides = it.legs.filter((l) => l.mode === "RIDE");
+  // Cumulative start time of each leg, and the arrival time.
+  const starts = it.legs.reduce<number[]>((acc, leg, i) => [...acc, (acc[i - 1] ?? 0) + (i === 0 ? 0 : it.legs[i - 1].duration_seconds)], []);
+  const arrival = it.total_seconds;
+  return (
+    <ol className="rise relative mt-1 mb-2 pl-1" style={{ ["--rail" as string]: color }}>
+      {it.legs.map((leg, i) => {
+        const start = starts[i];
+        const isReset = leg.mode === "RIDE" && it.legs[i + 1]?.mode === "RIDE";
+        const last = i === it.legs.length - 1;
+        return (
+          <li key={i} className="grid grid-cols-[44px_18px_1fr] gap-x-2">
+            <span className="num pt-[3px] text-[12px] text-muted">{clock(start)}</span>
+            <span className="relative flex justify-center">
+              <span
+                aria-hidden
+                className="absolute top-2 bottom-[-2px] w-0.5"
+                style={{
+                  background: leg.mode === "WALK" ? `repeating-linear-gradient(to bottom, var(--walk) 0 3px, transparent 3px 7px)` : "var(--rail)",
+                }}
+              />
+              <span aria-hidden className="relative mt-[5px] h-2.5 w-2.5 rounded-full border-2 bg-paper" style={{ borderColor: i === 0 ? "var(--origin)" : "var(--rail)" }} />
+            </span>
+            <div className="pb-4">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[14px] text-ink">
+                  {leg.mode === "WALK" ? "Walk" : "Ride"} <span className="text-muted">to</span> {leg.to_name}
+                </span>
+                <span className="num shrink-0 text-[12px] text-muted">{minutes(leg.duration_seconds)}</span>
+              </div>
+              <div className="text-[12px] text-muted">
+                {km(leg.distance_m)}
+                {leg.mode === "RIDE" && (
+                  <>
+                    {leg.elevation_gain_m > 0 && <> · +{Math.round(leg.elevation_gain_m)} m climb</>} ·{" "}
+                    <span className={RISK_CLASS[leg.risk]}>{RISK_TEXT[leg.risk]}</span>
+                    {leg.overage_cost > 0 && <span className="num text-danger"> · {money(leg.overage_cost)}</span>}
+                  </>
+                )}
+              </div>
+              {isReset && (
+                <div className="mt-1.5 inline-flex items-center gap-1.5 border border-rule-strong px-1.5 py-0.5 text-[11px] text-ink">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+                    <path d="M21 12a9 9 0 1 1-3-6.7" />
+                    <path d="M21 3v6h-6" />
+                  </svg>
+                  Reset: dock, wait, re-unlock the same bike
+                </div>
+              )}
+            </div>
+            {last && (
+              <>
+                <span className="num text-[12px] text-muted">{clock(arrival)}</span>
+                <span className="flex justify-center">
+                  <span aria-hidden className="mt-[3px] h-2.5 w-2.5 rounded-sm" style={{ background: "var(--destination)" }} />
+                </span>
+                <span className="text-[14px] text-ink">Arrive</span>
+              </>
+            )}
+          </li>
+        );
+      })}
+      {rides.length > 0 && (
+        <li className="num mt-2 pl-[62px] text-[11px] text-muted">
+          riding {minutes(rides.reduce((a, l) => a + l.cycling_seconds, 0))} · lights {minutes(rides.reduce((a, l) => a + l.traffic_light_seconds, 0))} ·
+          docking {minutes(rides.reduce((a, l) => a + l.docking_seconds, 0))}
+        </li>
+      )}
+    </ol>
   );
 }
 
@@ -126,37 +183,30 @@ export default function ResultsPanel({
   choices,
   selectedKey,
   onSelect,
+  limitMinutes,
 }: {
   data: CompareResponse;
   choices: Choice[];
   selectedKey: string | null;
   onSelect: (key: string) => void;
+  limitMinutes: number;
 }) {
-  const naive = data.naive;
-  const hard = data.hard_constraint;
-  const saving = naive && hard ? naive.total_cost - hard.total_cost : 0;
-  const slower = naive && hard ? (hard.total_seconds - naive.total_seconds) / 60 : 0;
-
+  const selected = choices.find((c) => c.key === selectedKey) ?? null;
   return (
-    <section className="space-y-2">
-      {naive && hard && (
-        <p className="rounded-lg bg-panel-2 px-3 py-2 text-[13px]">
-          {saving > 0 ? (
-            <>
-              Resetting the clock saves <b className="text-hard">{money(saving)}</b> for{" "}
-              <b className="tnum">{slower >= 0 ? `+${slower.toFixed(1)}` : slower.toFixed(1)} min</b> versus riding straight through.
-            </>
-          ) : (
-            <>The direct ride fits the limit: no reset needed, nothing to pay.</>
-          )}
-        </p>
-      )}
-      {choices.map((c) => (
-        <Card key={c.key} choice={c} selected={c.key === selectedKey} onSelect={() => onSelect(c.key)} />
-      ))}
-      <p className="tnum pt-1 text-[11px] leading-relaxed text-muted">
-        Pareto search: {data.stats.labels_generated.toLocaleString()} labels, {(data.stats.pruned_fraction * 100).toFixed(1)}% pruned by dominance,
-        frontier {data.stats.frontier_size}, {data.stats.planning_ms} ms. Walk legs {data.stats.walk_legs_street_routed ? "street-routed" : "estimated"}.
+    <section className="rise">
+      <Headline data={data} />
+      {choices.length > 1 && <FrontierChart choices={choices} selectedKey={selectedKey} onSelect={onSelect} limitMinutes={limitMinutes} />}
+      <div className="mt-4 border-b border-rule">
+        {choices.map((c, i) => (
+          <div key={c.key}>
+            <Row choice={c} selected={c.key === selectedKey} index={i} onSelect={() => onSelect(c.key)} />
+            {selected?.key === c.key && <Timeline it={c.itinerary} color={c.color} />}
+          </div>
+        ))}
+      </div>
+      <p className="num mt-3 text-[11px] leading-relaxed text-muted">
+        {data.stats.labels_generated.toLocaleString()} labels · {(data.stats.pruned_fraction * 100).toFixed(1)}% pruned by dominance · frontier{" "}
+        {data.stats.frontier_size} · {data.stats.planning_ms} ms · walks {data.stats.walk_legs_street_routed ? "street-routed" : "estimated"}
       </p>
     </section>
   );

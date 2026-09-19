@@ -4,19 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import type { Map as MLMap, MapLayerMouseEvent, MapMouseEvent, Marker } from "maplibre-gl";
 import type { Coord, Itinerary, Station } from "@/lib/api";
+import { escapeHtml, resolveColor, STATION_COLORS, stationState, type MapProps } from "./mapProps";
 
-export type MapPoint = { lat: number; lon: number };
-
-type Props = {
-  stations: Station[];
-  origin: MapPoint | null;
-  destination: MapPoint | null;
-  itinerary: Itinerary | null; // the highlighted one
-  ghost: Itinerary | null; // faint comparison (the naive route)
-  lineColor: string;
-  onClick: (p: MapPoint) => void;
-  onDragEnd: (role: "origin" | "destination", p: MapPoint) => void;
-};
+type Props = MapProps;
 
 // MapLibre derives its worker URL from import.meta.url, which is not an http(s) URL
 // under a bundler; without this the worker is spawned from an empty URL and tiles
@@ -63,42 +53,37 @@ function stationCollection(stations: Station[]): GeoJSON.FeatureCollection {
     features: stations.map((s) => ({
       type: "Feature",
       properties: {
+        id: s.id,
         name: s.name,
         bikes: s.bikes,
         docks: s.docks,
         elevation: s.elevation_m == null ? "?" : Math.round(s.elevation_m),
-        state: !s.renting && !s.returning ? "down" : s.bikes === 0 ? "empty" : s.docks === 0 ? "full" : "ok",
+        state: stationState(s),
       },
       geometry: { type: "Point", coordinates: [s.lon, s.lat] },
     })),
   };
 }
 
-// MapLibre paint values must be real colors; the UI passes CSS custom properties.
-function resolveColor(value: string): string {
-  const m = /^var\((--[\w-]+)\)$/.exec(value.trim());
-  if (!m) return value;
-  return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() || "#0f6e56";
-}
-
 function makeMarker(role: "origin" | "destination"): Marker {
   const el = document.createElement("div");
-  el.className = `marker marker-${role}`;
+  el.className = `pin pin-${role}`;
   el.title = role === "origin" ? "Origin (drag to move)" : "Destination (drag to move)";
   return new maplibregl.Marker({ element: el, draggable: true, anchor: "bottom" });
 }
 
-export default function MapView({ stations, origin, destination, itinerary, ghost, lineColor, onClick, onDragEnd }: Props) {
+export default function MapLibreView({ stations, origin, destination, itinerary, ghost, lineColor, onClick, onStationClick, onDragEnd }: Props) {
   const container = useRef<HTMLDivElement>(null);
   const map = useRef<MLMap | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const ready = useRef(false);
   const markers = useRef<{ origin: Marker | null; destination: Marker | null }>({ origin: null, destination: null });
-  const handlers = useRef({ onClick, onDragEnd });
+  const handlers = useRef({ onClick, onStationClick, onDragEnd });
   const queue = useRef<((m: MLMap) => void)[]>([]);
+  const stationById = useRef(new Map<string, Station>());
   useEffect(() => {
-    handlers.current = { onClick, onDragEnd };
-  }, [onClick, onDragEnd]);
+    handlers.current = { onClick, onStationClick, onDragEnd };
+  }, [onClick, onStationClick, onDragEnd]);
 
   // Create the map once.
   useEffect(() => {
@@ -142,12 +127,12 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
           "circle-color": [
             "match",
             ["get", "state"],
-            "empty", "#b42318",
-            "full", "#b54708",
-            "down", "#8a8985",
-            "#0f6e56",
+            "empty", STATION_COLORS.empty,
+            "full", STATION_COLORS.full,
+            "down", STATION_COLORS.down,
+            STATION_COLORS.ok,
           ],
-          "circle-stroke-color": "#ffffff",
+          "circle-stroke-color": "#f4f1ea",
           "circle-stroke-width": 1,
           "circle-opacity": 0.9,
         },
@@ -157,7 +142,7 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
         type: "line",
         source: "ghost",
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#c2410c", "line-width": 3, "line-opacity": 0.35, "line-dasharray": [1, 2] },
+        paint: { "line-color": resolveColor("var(--naive)"), "line-width": 3, "line-opacity": 0.35 },
       });
       m.addLayer({
         id: "route-casing",
@@ -165,7 +150,7 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
         source: "route",
         filter: ["==", ["get", "mode"], "RIDE"],
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#ffffff", "line-width": 9, "line-opacity": 0.9 },
+        paint: { "line-color": "#f4f1ea", "line-width": 9, "line-opacity": 0.9 },
       });
       m.addLayer({
         id: "route-ride",
@@ -181,13 +166,13 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
         source: "route",
         filter: ["==", ["get", "mode"], "WALK"],
         layout: { "line-join": "round", "line-cap": "round" },
-        paint: { "line-color": "#6d6c67", "line-width": 3, "line-dasharray": [0.5, 1.6] },
+        paint: { "line-color": resolveColor("var(--walk)"), "line-width": 3, "line-dasharray": [0.5, 1.6] },
       });
       m.addLayer({
         id: "resets",
         type: "circle",
         source: "resets",
-        paint: { "circle-radius": 7, "circle-color": "#ffffff", "circle-stroke-color": resolveColor(lineColor), "circle-stroke-width": 3 },
+        paint: { "circle-radius": 7, "circle-color": "#f4f1ea", "circle-stroke-color": resolveColor(lineColor), "circle-stroke-width": 3 },
       });
 
       const popup = new maplibregl.Popup({ closeButton: false, closeOnClick: false, offset: 8 });
@@ -199,7 +184,7 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
         popup
           .setLngLat(f.geometry.coordinates as [number, number])
           .setHTML(
-            `<div style="font:12px system-ui;color:#1a1a18"><b>${p.name}</b><br>${p.bikes} bikes · ${p.docks} docks · ${p.elevation} m</div>`,
+            `<div class="station-tip"><b>${escapeHtml(p.name)}</b><br><span class="num">${p.bikes}</span> bikes · <span class="num">${p.docks}</span> docks · <span class="num">${p.elevation} m</span></div>`,
           )
           .addTo(m);
       });
@@ -212,12 +197,23 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
         if (!f || f.geometry.type !== "Point") return;
         popup
           .setLngLat(f.geometry.coordinates as [number, number])
-          .setHTML(`<div style="font:12px system-ui;color:#1a1a18">Reset: dock &amp; re-unlock at<br><b>${(f.properties as { name: string }).name}</b></div>`)
+          .setHTML(`<div class="station-tip">Reset: dock &amp; re-unlock at<br><b>${escapeHtml((f.properties as { name: string }).name)}</b></div>`)
           .addTo(m);
       });
       m.on("mouseleave", "resets", () => popup.remove());
 
-      m.on("click", (e: MapMouseEvent) => handlers.current.onClick({ lat: e.lngLat.lat, lon: e.lngLat.lng }));
+      m.on("click", "stations", (e: MapLayerMouseEvent) => {
+        const id = String(e.features?.[0]?.properties?.id ?? "");
+        const s = stationById.current.get(id);
+        if (s) {
+          handlers.current.onStationClick(s);
+          e.preventDefault();
+        }
+      });
+      m.on("click", (e: MapMouseEvent) => {
+        if (e.defaultPrevented) return;
+        handlers.current.onClick({ lat: e.lngLat.lat, lon: e.lngLat.lng });
+      });
       ready.current = true;
       queue.current.splice(0).forEach((fn) => fn(m));
     });
@@ -241,6 +237,7 @@ export default function MapView({ stations, origin, destination, itinerary, ghos
   };
 
   useEffect(() => {
+    stationById.current = new Map(stations.map((s) => [s.id, s]));
     whenReady((m) => (m.getSource("stations") as maplibregl.GeoJSONSource).setData(stationCollection(stations)));
      
   }, [stations]);

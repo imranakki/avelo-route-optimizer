@@ -1,24 +1,49 @@
 # Web UI
 
-Next.js front-end for the àVélo Route Optimizer API: search for places (or click /
-drag pins on the map), pick a bike type, and the trip is planned and drawn on real
-streets — every strategy side by side, with resets marked.
+Next.js front-end for the àVélo Route Optimizer API: search for places (or tap / drag
+pins on the map), pick a bike type and plan, and every strategy is planned and drawn
+on real streets — the constrained route, the direct ride, and the time/money frontier
+in between, with reset stops marked.
 
 ```bash
-npm install          # also copies the MapLibre worker into public/ (postinstall)
-npm run dev          # http://localhost:3000, proxies /api/* to API_URL (default :8000)
-API_URL=http://127.0.0.1:8765 npm run dev   # API elsewhere
-npm run build && npm start                  # production
+npm install
+npm run dev                                  # http://localhost:3000, proxies /api/* to API_URL
+API_URL=http://127.0.0.1:8765 npm run dev    # API on another port
+npm run build && npm start                   # production (standalone output)
 ```
 
-Stack: Next.js (App Router, TypeScript), Tailwind, MapLibre GL with OpenFreeMap vector
-tiles. Place search and reverse geocoding go through the API's `/geocode` endpoints
-(Photon/OSM behind a small cache), so the browser only ever talks to one origin.
+Copy `.env.example` to `.env.local` to set the Google Maps browser key.
 
-Notes:
-- MapLibre resolves its tile-parsing worker from `import.meta.url`, which is not an
-  http URL under a bundler; `scripts/copy-maplibre-worker.mjs` serves the worker from
-  `public/maplibre/` and `MapView.tsx` sets it explicitly. Without this the map
-  silently never loads tiles.
-- Colours are CSS custom properties; `MapView` resolves them to real colours before
-  handing them to MapLibre paint properties.
+## Stack
+
+Next.js (App Router, TypeScript), Tailwind, IBM Plex Sans/Mono + Instrument Serif.
+Base map: Google Maps (JavaScript API, custom muted style) when a key is configured and
+authorised, otherwise MapLibre GL with OpenFreeMap vector tiles — the switch is automatic
+at runtime, so the app never shows a blank map. Both providers implement the same
+`MapProps` contract (`src/components/mapProps.ts`).
+
+Place search goes through the API (`/geocode`, `/geocode/place`): Google Places (New)
+server-side when the API has a key, the OSM geocoder otherwise. The browser never talks
+to Google for search, so a Maps authorisation failure cannot break it. A per-session id
+groups keystrokes and the final selection the way Google bills autocomplete.
+
+The trip (origin, destination, bike, plan) lives in the URL hash, so a plan is shareable.
+
+## Design
+
+A route planner is a timetable, so the interface is set like one: the itinerary is a
+vertical rail with monospaced clock times, the time/money trade-off is a small chart
+you can click, and the result is a sentence in a serif ("Reset the clock once and save
+$2.70 for 1.2 fewer minutes"). Paper and ink, one signal colour per strategy, no cards,
+no gradients, no icons where a word will do.
+
+## Notes
+
+- MapLibre resolves its tile-parsing worker from `import.meta.url`, which is not an http
+  URL under a bundler; the worker is served from `public/maplibre/` (committed, refreshed
+  by `scripts/copy-maplibre-worker.mjs` on install) and set explicitly in `MapLibreView`.
+- Colours are CSS custom properties; map providers resolve them to real colours before
+  handing them to paint properties.
+- After a Google Maps authorisation failure (`ApiNotActivatedMapError`, referrer not
+  allowed), Google's script disables its own classes — which is why search is done
+  server-side and the map falls back rather than retrying.
