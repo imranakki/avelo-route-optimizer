@@ -1,0 +1,42 @@
+# Full production stack: the API plus two self-hosted OSRM routers (bicycle and
+# foot profiles) over a Québec City extract. Prepare the routing data once with
+# `./scripts/prepare_osrm.sh`, then:
+#
+#   docker compose up -d                       # everything
+#   docker compose up -d osrm-bike osrm-foot   # routers only (run the API from the venv)
+#
+# The API's data/cache volume persists the elevation, distance-matrix and
+# polyline caches across restarts.
+
+services:
+  osrm-bike:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    command: osrm-routed --algorithm mld --max-table-size 1000 /data/quebec-city.osrm
+    volumes:
+      - ./data/osrm/bicycle:/data:ro
+    ports:
+      - "127.0.0.1:5001:5000"
+    restart: unless-stopped
+
+  osrm-foot:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    command: osrm-routed --algorithm mld --max-table-size 1000 /data/quebec-city.osrm
+    volumes:
+      - ./data/osrm/foot:/data:ro
+    ports:
+      - "127.0.0.1:5002:5000"
+    restart: unless-stopped
+
+  api:
+    build: .
+    depends_on: [osrm-bike, osrm-foot]
+    environment:
+      AVELO_OSRM_ROOT: http://osrm-bike:5000
+      AVELO_OSRM_WALK_ROOT: http://osrm-foot:5000
+      AVELO_OSRM_TABLE_MAX_COORDS: "1000"
+      AVELO_OSRM_REQUEST_DELAY_SECONDS: "0"
+    volumes:
+      - ./data/cache:/app/data/cache
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
