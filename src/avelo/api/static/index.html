@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>àVélo Route Optimizer</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1c1c1a; --muted: #6b6a66; --line: #e3e1da;
+    --accent: #0f6e56; --accent-ink: #ffffff; --warn: #b54708; --danger: #b42318;
+    --walk: #6b6a66; --naive: #b42318; --hard: #0f6e56; --pareto: #175cd3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413; --panel: #1e1e1c; --ink: #ecebe6; --muted: #9c9a93; --line: #34332f;
+      --accent: #2fb58e; --accent-ink: #0b1a15; --warn: #f79009; --danger: #f04438;
+      --walk: #9c9a93; --naive: #f04438; --hard: #2fb58e; --pareto: #6aa8ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--ink); background: var(--bg);
+    display: grid; grid-template-columns: 380px 1fr; grid-template-rows: 100%;
+  }
+  aside { padding: 20px 16px; overflow-y: auto; border-right: 1px solid var(--line); background: var(--panel); }
+  #map { height: 100%; }
+  h1 { font-size: 18px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+  select, button, input {
+    width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel); color: var(--ink);
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; cursor: pointer; margin-top: 12px; }
+  button.primary:disabled { opacity: 0.5; cursor: default; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .hint { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+  .pt { font-variant-numeric: tabular-nums; font-size: 13px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 10px; cursor: pointer; }
+  .card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .card h3 { margin: 0; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
+  .card .tag { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; color: #fff; }
+  .card .meta { color: var(--muted); font-size: 13px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .legs { margin: 6px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .legs li { padding: 2px 0; border-top: 1px dashed var(--line); font-variant-numeric: tabular-nums; }
+  .risk-LOW { color: var(--accent); } .risk-MEDIUM { color: var(--warn); } .risk-HIGH, .risk-INFEASIBLE { color: var(--danger); }
+  .stats { font-size: 12px; color: var(--muted); margin-top: 14px; font-variant-numeric: tabular-nums; }
+  .err { color: var(--danger); font-size: 13px; margin-top: 10px; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 18px 0 0; }
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 1fr 45%; }
+    aside { order: 2; border-right: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <h1>àVélo Route Optimizer</h1>
+  <p class="sub">Click the map to set an origin, then a destination. Live station data, real street routing. You keep one bike: a “reset” is dock, wait, re-unlock.</p>
+
+  <div class="row">
+    <div><label>Origin</label><div class="pt" id="from">—</div></div>
+    <div><label>Destination</label><div class="pt" id="to">—</div></div>
+  </div>
+
+  <label for="vehicle">Bike type</label>
+  <select id="vehicle">
+    <option value="EFIT">EFIT — electric</option>
+    <option value="ICONIC">ICONIC — mechanical</option>
+  </select>
+
+  <button class="primary" id="go" disabled>Plan trip</button>
+  <button id="reset" style="margin-top:8px">Reset</button>
+  <p class="hint">Strategies: <b style="color:var(--naive)">naive</b> (one ride, nearest stations) ·
+    <b style="color:var(--hard)">constrained</b> (every leg under the limit) ·
+    <b style="color:var(--pareto)">frontier</b> (time vs. money options).</p>
+
+  <div id="error" class="err"></div>
+  <div id="results"></div>
+  <div id="stats" class="stats"></div>
+</aside>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+(function () {
+  "use strict";
+  const map = L.map("map", { zoomControl: true }).setView([46.813, -71.225], 13);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19, attribution: "&copy; OpenStreetMap contributors &copy; CARTO"
+  }).addTo(map);
+
+  const $ = (id) => document.getElementById(id);
+  const state = { from: null, to: null, markers: [], routeLayer: L.layerGroup().addTo(map), stationLayer: L.layerGroup().addTo(map) };
+  const fmt = (c) => `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}`;
+  const mins = (s) => `${(s / 60).toFixed(1)} min`;
+  const money = (d) => `$${d.toFixed(2)}`;
+
+  // Stations, coloured by bikes available.
+  fetch("/stations").then(r => r.json()).then(d => {
+    d.stations.forEach(s => {
+      const color = s.bikes === 0 ? "#b42318" : s.docks === 0 ? "#b54708" : "#0f6e56";
+      L.circleMarker([s.lat, s.lon], { radius: 4, color, weight: 1, fillOpacity: 0.8 })
+        .bindTooltip(`${s.name}<br>${s.bikes} bikes · ${s.docks} docks · ${s.elevation_m == null ? "?" : Math.round(s.elevation_m)} m`)
+        .addTo(state.stationLayer);
+    });
+  }).catch(() => {});
+
+  function setPoint(latlng) {
+    if (!state.from) { state.from = latlng; $("from").textContent = fmt(latlng); }
+    else if (!state.to) { state.to = latlng; $("to").textContent = fmt(latlng); }
+    else return;
+    state.markers.push(L.marker(latlng).addTo(map));
+    $("go").disabled = !(state.from && state.to);
+  }
+  map.on("click", (e) => setPoint(e.latlng));
+
+  $("reset").onclick = () => {
+    state.from = state.to = null; $("from").textContent = $("to").textContent = "—";
+    state.markers.forEach(m => map.removeLayer(m)); state.markers = [];
+    state.routeLayer.clearLayers(); $("results").innerHTML = ""; $("stats").textContent = ""; $("error").textContent = "";
+    $("go").disabled = true;
+  };
+
+  function legLine(leg, color, weight, dash) {
+    const pts = leg.geometry ? leg.geometry.map(p => [p.lat, p.lon]) : [[leg.from_coord.lat, leg.from_coord.lon], [leg.to_coord.lat, leg.to_coord.lon]];
+    return L.polyline(pts, { color, weight, opacity: 0.9, dashArray: dash });
+  }
+  function draw(it, color) {
+    state.routeLayer.clearLayers();
+    it.legs.forEach(leg => {
+      const walk = leg.mode === "WALK";
+      legLine(leg, walk ? getComputedStyle(document.documentElement).getPropertyValue("--walk") : color, walk ? 3 : 5, walk ? "4 6" : null).addTo(state.routeLayer);
+    });
+    const b = state.routeLayer.getBounds(); if (b.isValid()) map.fitBounds(b.pad(0.15));
+  }
+
+  function card(title, tag, color, it, key) {
+    if (!it) return `<div class="card"><h3>${title}<span class="tag" style="background:${color}">${tag}</span></h3><div class="meta">no route</div></div>`;
+    const legs = it.legs.map((l, i) => {
+      const kind = l.mode === "WALK" ? "Walk" : "Ride";
+      const isReset = l.mode === "RIDE" && i < it.legs.length - 1 && it.legs[i + 1].mode === "RIDE";
+      const extra = l.mode === "RIDE" ? ` · <span class="risk-${l.risk}">${l.risk.toLowerCase()}</span>${l.overage_cost ? " · " + money(l.overage_cost) : ""}${l.elevation_gain_m ? " · +" + Math.round(l.elevation_gain_m) + " m" : ""}` : "";
+      return `<li>${kind} ${mins(l.duration_seconds)} → ${l.to_name}${isReset ? " <b>(reset)</b>" : ""}${extra}</li>`;
+    }).join("");
+    return `<div class="card" data-key="${key}"><h3>${title}<span class="tag" style="background:${color}">${tag}</span></h3>
+      <div class="meta">${mins(it.total_seconds)} · ${money(it.total_cost)} · ${it.num_transfers} reset${it.num_transfers === 1 ? "" : "s"} · <span class="risk-${it.overall_risk}">${it.overall_risk.toLowerCase()} risk</span></div>
+      <ul class="legs">${legs}</ul></div>`;
+  }
+
+  $("go").onclick = async () => {
+    $("go").disabled = true; $("error").textContent = ""; $("results").innerHTML = "<p class='hint'>Planning…</p>";
+    const q = new URLSearchParams({ from_lat: state.from.lat, from_lon: state.from.lng, to_lat: state.to.lat, to_lon: state.to.lng, vehicle: $("vehicle").value, geometry: "true", max_solutions: 6 });
+    try {
+      const r = await fetch(`/route/compare?${q}`);
+      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || r.statusText); }
+      const d = await r.json();
+      const css = getComputedStyle(document.documentElement);
+      const colors = { naive: css.getPropertyValue("--naive"), hard: css.getPropertyValue("--hard"), pareto: css.getPropertyValue("--pareto") };
+      const all = { naive: d.naive, hard: d.hard_constraint };
+      let html = "<section><h2>Baseline</h2>" + card("Naive", "1 ride", colors.naive, d.naive, "naive") + "</section>";
+      html += "<section><h2>Constrained</h2>" + card("Every leg under the limit", "$0", colors.hard, d.hard_constraint, "hard") + "</section>";
+      html += "<section><h2>Time / money frontier</h2>";
+      d.options.forEach((o, i) => { all["p" + i] = o; html += card(`Option ${i + 1}`, i === 0 ? "fastest" : i === d.options.length - 1 ? "cheapest" : "trade-off", colors.pareto, o, "p" + i); });
+      html += "</section>";
+      $("results").innerHTML = html;
+      $("stats").textContent = `Search: ${d.stats.labels_generated} labels generated, ${(d.stats.pruned_fraction * 100).toFixed(1)}% pruned by dominance, frontier ${d.stats.frontier_size}, ${d.stats.planning_ms} ms. Walk legs ${d.stats.walk_legs_street_routed ? "street-routed" : "estimated"}.`;
+      document.querySelectorAll(".card[data-key]").forEach(el => el.onclick = () => {
+        document.querySelectorAll(".card").forEach(c => c.classList.remove("selected")); el.classList.add("selected");
+        const k = el.dataset.key; draw(all[k], k === "naive" ? colors.naive : k === "hard" ? colors.hard : colors.pareto);
+      });
+      const first = document.querySelector(".card[data-key='hard']") || document.querySelector(".card[data-key]");
+      if (first) first.click();
+    } catch (err) {
+      $("results").innerHTML = ""; $("error").textContent = err.message;
+    } finally { $("go").disabled = false; }
+  };
+})();
+</script>
+</body>
+</html>
