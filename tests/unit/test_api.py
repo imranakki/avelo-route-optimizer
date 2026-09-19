@@ -140,7 +140,7 @@ def test_compare_bundles_all_strategies(client: TestClient) -> None:
 def test_unreachable_destination_is_404_not_500(client: TestClient) -> None:
     r = client.get("/route", params={**WEST, "to_lat": 47.38, "to_lon": -61.86})
     assert r.status_code == 404
-    assert "walking range" in r.json()["detail"] or "reach" in r.json()["detail"]
+    assert "destination" in r.json()["detail"]  # says *why*, not just "no route"
 
 
 def test_invalid_coordinates_are_422(client: TestClient) -> None:
@@ -150,3 +150,33 @@ def test_invalid_coordinates_are_422(client: TestClient) -> None:
 def test_index_serves_the_map(client: TestClient) -> None:
     r = client.get("/")
     assert r.status_code == 200 and "leaflet" in r.text.lower()
+
+
+def test_geocode_proxies_and_normalises_results(client: TestClient) -> None:
+    with respx.mock(assert_all_called=False) as router:
+        router.get(url__startswith="https://photon.komoot.io/api/").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "features": [
+                        {
+                            "geometry": {"coordinates": [-71.2741, 46.7812]},
+                            "properties": {
+                                "name": "Université Laval",
+                                "street": "Rue de l'Université",
+                                "city": "Québec",
+                                "osm_value": "university",
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+        body = client.get("/geocode", params={"q": "universite laval"}).json()
+    assert body["results"][0]["name"] == "Université Laval"
+    assert body["results"][0]["label"] == "Rue de l'Université, Québec"
+    assert body["results"][0]["lat"] == 46.7812
+
+
+def test_geocode_rejects_empty_query(client: TestClient) -> None:
+    assert client.get("/geocode", params={"q": ""}).status_code == 422

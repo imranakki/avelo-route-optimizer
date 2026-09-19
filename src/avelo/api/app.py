@@ -39,6 +39,7 @@ from avelo import __version__
 from avelo.config import Settings, get_settings
 from avelo.data.elevation import ElevationClient
 from avelo.data.gbfs import GBFSClient, GBFSError
+from avelo.data.geocode import GeocodeError, Geocoder
 from avelo.data.osrm import OSRMClient
 from avelo.models import Coord, Itinerary, LegMode, StationSnapshot, VehicleType
 from avelo.routing.cost import CostModel
@@ -67,6 +68,7 @@ class AppState:
     osrm_bike: OSRMClient | None
     osrm_foot: OSRMClient | None
     cost: CostModel
+    geocoder: Geocoder
     distances: dict[PairKey, float] = field(default_factory=dict)
     graphs: dict[VehicleType, _CachedGraph] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -212,6 +214,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         osrm_bike=bike,
         osrm_foot=foot,
         cost=CostModel(settings),
+        geocoder=Geocoder(settings),
     )
     # Warm every cache at boot so the first user request is not the slow one. The
     # street matrix is ~25 requests cold and zero requests warm (disk cache).
@@ -227,6 +230,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     await gbfs.aclose()
     await elev.__aexit__()
+    await state.geocoder.aclose()
     for c in (bike, foot):
         if c is not None:
             await c.aclose()
@@ -303,6 +307,19 @@ class CompareResponse(BaseModel):
     hard_constraint: Itinerary | None
     options: list[Itinerary]
     stats: StatsOut
+
+
+class PlaceOut(BaseModel):
+    name: str
+    label: str
+    lat: float
+    lon: float
+    kind: str
+
+
+class GeocodeResponse(BaseModel):
+    query: str
+    results: list[PlaceOut]
 
 
 class HealthResponse(BaseModel):
@@ -501,15 +518,18 @@ async def route_compare(
     naive: Itinerary | None = None
     hard: Itinerary | None = None
     options: list[Itinerary] = []
+    reason = "no itinerary reaches the destination"
     with suppress(NoRouteFound):
         naive = planner.plan_naive_baseline(origin, destination, vehicle, walks)
-    with suppress(NoRouteFound):
+    try:
         hard = planner.plan_hard_constraint(origin, destination, vehicle, walks)
+    except NoRouteFound as exc:
+        reason = str(exc)  # the most specific explanation we have
     with suppress(NoRouteFound):
         options = planner.plan_pareto(origin, destination, vehicle, max_solutions, walks)
     ms = (time.perf_counter() - t0) * 1000
     if naive is None and hard is None and not options:
-        raise HTTPException(status_code=404, detail="no itinerary reaches the destination")
+        raise HTTPException(status_code=404, detail=reason)
     if geometry:
         naive = await _with_geometry(naive) if naive else None
         hard = await _with_geometry(hard) if hard else None
@@ -520,6 +540,37 @@ async def route_compare(
         options=options,
         stats=_stats(planner.last_stats, ms, routed),
     )
+
+
+@router.get("/geocode", response_model=GeocodeResponse, tags=["data"])
+async def geocode(
+    q: str = Query(..., min_length=1, max_length=200, description="Free-text place query"),
+    limit: int = Query(6, ge=1, le=10),
+    lang: str = Query("fr", pattern="^(fr|en)$"),
+) -> GeocodeResponse:
+    """Place search within Québec City, for picking an origin or destination."""
+    try:
+        places = await _state().geocoder.search(q, limit, lang)
+    except GeocodeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return GeocodeResponse(
+        query=q,
+        results=[
+            PlaceOut(name=p.name, label=p.label, lat=p.lat, lon=p.lon, kind=p.kind) for p in places
+        ],
+    )
+
+
+@router.get("/geocode/reverse", response_model=PlaceOut | None, tags=["data"])
+async def reverse_geocode(
+    lat: float = _lat(), lon: float = _lon(), lang: str = Query("fr", pattern="^(fr|en)$")
+) -> PlaceOut | None:
+    """Nearest named place to a point (labels a pin dropped on the map)."""
+    try:
+        p = await _state().geocoder.reverse(lat, lon, lang)
+    except GeocodeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return PlaceOut(name=p.name, label=p.label, lat=p.lat, lon=p.lon, kind=p.kind) if p else None
 
 
 @router.get("/", include_in_schema=False)

@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     # Walking, for the first/last leg between a real address and a station.
     walking_speed_kmh: float = 4.8
     max_walk_meters: float = 800.0
+    # When no usable station lies within max_walk_meters (empty stations at night,
+    # a suburb edge), fall back to the single nearest one up to this far rather than
+    # refusing to plan. The itinerary shows the long walk; the rider decides.
+    max_walk_fallback_meters: float = 2000.0
 
     # --- Elevation / hill penalty ---------------------------------------------
     # Québec City's Basse-Ville/Haute-Ville escarpment is the reason this project
@@ -136,6 +140,14 @@ class Settings(BaseSettings):
     # How many nearby stations to consider as the first / last station of a trip.
     # Each candidate adds a handful of walk edges; the search is unaffected otherwise.
     walk_candidates: int = 5
+
+    # --- Geocoding (place search for the web UI) --------------------------------
+    # Photon (komoot) is an OSM geocoder that permits autocomplete-style queries.
+    # Results are biased to Québec City and restricted to its bounding box.
+    geocoder_url: str = "https://photon.komoot.io/api/"
+    geocoder_bbox: str = "-71.60,46.65,-70.95,47.00"  # min_lon,min_lat,max_lon,max_lat
+    geocoder_bias_lat: float = 46.8139
+    geocoder_bias_lon: float = -71.2080
 
     # --- API -------------------------------------------------------------------
     # Comma-separated origins allowed to call the API from a browser ("*" = any).

@@ -31,7 +31,7 @@ mkdir -p "$DATA"
 if [ ! -f "$DATA/quebec-city.osm.pbf" ]; then
   if [ ! -f "$DATA/quebec-latest.osm.pbf" ]; then
     echo ">> downloading Québec extract (~1.2 GB)"
-    curl -L --fail --progress-bar -o "$DATA/quebec-latest.osm.pbf.part" "$PROVINCE_URL"
+    curl -L --fail --progress-bar -C - -o "$DATA/quebec-latest.osm.pbf.part" "$PROVINCE_URL"
     mv "$DATA/quebec-latest.osm.pbf.part" "$DATA/quebec-latest.osm.pbf"
   fi
   echo ">> clipping to Québec City ($BBOX)"

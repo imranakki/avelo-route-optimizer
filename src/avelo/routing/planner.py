@@ -179,8 +179,13 @@ class RoutePlanner:
             ),
             key=lambda t: t[1],
         )
-        ranked = [(sid, m) for sid, m in ranked if m <= self.settings.max_walk_meters]
-        return ranked[: self.settings.walk_candidates]
+        near = [(sid, m) for sid, m in ranked if m <= self.settings.max_walk_meters]
+        if near:
+            return near[: self.settings.walk_candidates]
+        # Nothing in comfortable range: offer the nearest station anyway, up to the
+        # fallback radius, so an empty neighbourhood degrades to a longer walk
+        # instead of "no route".
+        return [(sid, m) for sid, m in ranked[:1] if m <= self.settings.max_walk_fallback_meters]
 
     def _build_arcs(
         self,
@@ -323,7 +328,9 @@ class RoutePlanner:
         """
         arcs = self._build_arcs(origin, destination, vehicle, walks or WalkContext(), True)
         if not arcs[ORIGIN]:
-            raise NoRouteFound("no station with an available bike within walking range of origin")
+            raise NoRouteFound(
+                "no station with an available bike within 2 km of the origin right now"
+            )
 
         best: dict[str, Label] = {}
         counter = itertools.count()
@@ -350,6 +357,10 @@ class RoutePlanner:
                         ),
                     )
         self.last_stats = SearchStats(labels_settled=settled)
+        if not any(arc.to == DESTINATION for arcs_ in arcs.values() for arc in arcs_):
+            raise NoRouteFound(
+                "no station with a free dock within 2 km of the destination right now"
+            )
         raise NoRouteFound(
             "no itinerary reaches the destination with every ride leg under the limit"
         )
@@ -371,7 +382,9 @@ class RoutePlanner:
         """
         arcs = self._build_arcs(origin, destination, vehicle, walks or WalkContext(), False)
         if not arcs[ORIGIN]:
-            raise NoRouteFound("no station with an available bike within walking range of origin")
+            raise NoRouteFound(
+                "no station with an available bike within 2 km of the origin right now"
+            )
 
         bags: dict[str, list[Label]] = {}
         counter = itertools.count()
